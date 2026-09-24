@@ -52,6 +52,11 @@ builds that run on any distro). The script installs to `/usr/local/bin` when it 
 there and `~/.local/bin` otherwise. `BOLIDE_VERSION=0.1.0` pins a version and
 `BOLIDE_INSTALL_DIR=DIR` picks the directory.
 
+Without a pinned version, the script — and `bolide update` below — learns the latest
+release from where `github.com/jakequist/bolide/releases/latest` redirects, not from the
+GitHub API, whose 60-calls-an-hour limit for anonymous clients runs out behind a shared
+IP.
+
 From source, on any platform with a Rust toolchain:
 
 ```console

@@ -46,15 +46,24 @@ esac
 
 version="${BOLIDE_VERSION-}"
 if [ -z "$version" ]; then
-  latest=$(curl -fsSL --max-time 15 "https://api.github.com/repos/$REPO/releases/latest") ||
+  # releases/latest redirects to releases/tag/<tag>; curl reports where it landed, so no
+  # header is parsed here. Not the GitHub API: that allows 60 unauthenticated calls an
+  # hour per IP, and behind a shared IP it answers 403. crates/bolide-cli/src/update.rs
+  # (`bolide update`) resolves the latest release the same way.
+  latest=$(curl -fsSL --max-time 15 -o /dev/null -w '%{url_effective}' "$RELEASES/latest") ||
     fail "could not ask GitHub for the latest bolide release.
 Check your network and try again, or pick a version from $RELEASES and set BOLIDE_VERSION."
-  version=$(printf '%s\n' "$latest" | sed -n 's/.*"tag_name" *: *"\([^"]*\)".*/\1/p')
-  # The first match only, cut in the shell: `| head -n 1` could SIGPIPE sed.
-  nl='
-'
-  version=${version%%"$nl"*}
-  [ -n "$version" ] || fail "GitHub reported no latest bolide release. See $RELEASES"
+  tag=${latest%%[?#]*}
+  tag=${tag%/}
+  case "$tag" in
+    */releases/tag/?*) tag=${tag##*/releases/tag/} ;;
+    *) tag= ;;
+  esac
+  case "$tag" in
+    "" | v | */*) fail "found no release tag at $RELEASES/latest (it led to $latest), so there is no release yet.
+Pick a version from $RELEASES and set BOLIDE_VERSION." ;;
+  esac
+  version=$tag
 fi
 version="${version#v}"
 

@@ -10,9 +10,8 @@ use std::process::Command;
 
 use bolide_cli::error::EXIT_FAILURE;
 use bolide_cli::update::{
-    self, asset_name, asset_url, compare_versions, is_source_build, parse_latest_release,
-    release_target, staged_path, version_from_tag, Fetch, Outcome, LATEST_RELEASE_API,
-    RELEASES_PAGE,
+    self, asset_name, asset_url, compare_versions, is_source_build, release_target, staged_path,
+    version_from_release_url, version_from_tag, Fetch, Outcome, LATEST_RELEASE_URL, RELEASES_PAGE,
 };
 
 use common::TempDir;
@@ -71,9 +70,11 @@ fn the_urls_point_at_the_public_repository() {
         RELEASES_PAGE,
         "https://github.com/jakequist/bolide/releases"
     );
+    // The web redirect, not api.github.com: the API allows 60 unauthenticated calls an
+    // hour per IP, and behind a shared IP that runs out.
     assert_eq!(
-        LATEST_RELEASE_API,
-        "https://api.github.com/repos/jakequist/bolide/releases/latest"
+        LATEST_RELEASE_URL,
+        "https://github.com/jakequist/bolide/releases/latest"
     );
 }
 
@@ -117,16 +118,53 @@ fn a_version_that_is_not_one_does_not_compare() {
 }
 
 #[test]
-fn the_latest_release_response_yields_its_version() {
-    let body = r#"{"url":"…","tag_name":"v0.2.0","name":"v0.2.0","assets":[]}"#;
-    assert_eq!(parse_latest_release(body).unwrap(), "0.2.0");
+fn the_latest_redirect_yields_the_version_of_the_tag_it_lands_on() {
+    let url = |tag: &str| format!("https://github.com/jakequist/bolide/releases/tag/{tag}");
+    assert_eq!(version_from_release_url(&url("v0.2.0")).unwrap(), "0.2.0");
+    assert_eq!(version_from_release_url(&url("0.2.0")).unwrap(), "0.2.0");
+    assert_eq!(version_from_release_url(&url("v0.2.0/")).unwrap(), "0.2.0");
+    assert_eq!(
+        version_from_release_url(&url("v1.0.0-rc.1")).unwrap(),
+        "1.0.0-rc.1"
+    );
+    // A Location header value, as a raw HTTP/1.1 response ends it.
+    assert_eq!(
+        version_from_release_url(&format!("{}\r\n", url("v0.2.0"))).unwrap(),
+        "0.2.0"
+    );
+    assert_eq!(
+        version_from_release_url(&format!("{}?from=latest#top", url("v0.2.0"))).unwrap(),
+        "0.2.0"
+    );
+    // A mirror named by its own base, not github.com.
+    assert_eq!(
+        version_from_release_url("http://127.0.0.1:8080/mirror/releases/tag/v3.1.4").unwrap(),
+        "3.1.4"
+    );
 }
 
 #[test]
-fn a_latest_release_response_without_a_tag_is_an_error_that_says_so() {
-    let err = parse_latest_release(r#"{"message":"Not Found"}"#).unwrap_err();
-    assert!(err.contains("tag_name"), "{err}");
-    assert!(parse_latest_release("<html>rate limited</html>").is_err());
+fn a_redirect_that_does_not_land_on_a_tag_is_an_error_that_says_where_it_went() {
+    // A repository with no release yet: GitHub sends /releases/latest to /releases.
+    let err = version_from_release_url("https://github.com/jakequist/bolide/releases").unwrap_err();
+    assert!(
+        err.contains("https://github.com/jakequist/bolide/releases"),
+        "{err}"
+    );
+    assert!(err.contains("tag"), "{err}");
+    for garbage in [
+        "",
+        "not a url",
+        "https://github.com/jakequist/bolide/releases/latest",
+        "https://github.com/jakequist/bolide/releases/tag/",
+        "https://github.com/jakequist/bolide/releases/tag/v",
+        "https://github.com/jakequist/bolide/releases/tag/v1/extra",
+    ] {
+        assert!(
+            version_from_release_url(garbage).is_err(),
+            "{garbage:?} was accepted"
+        );
+    }
 }
 
 #[test]
@@ -172,7 +210,7 @@ fn check_lines_say_what_to_do() {
 
 // ------------------------------------------------------------------ the swap, faked
 
-/// A fake GitHub: a canned latest-release body and a tarball on local disk.
+/// A fake GitHub: where `releases/latest` redirects to, and a tarball on local disk.
 struct FakeGitHub {
     latest: Result<String, String>,
     tarball: Option<PathBuf>,
@@ -180,7 +218,7 @@ struct FakeGitHub {
 }
 
 impl Fetch for FakeGitHub {
-    fn text(&self, url: &str) -> Result<String, String> {
+    fn resolve(&self, url: &str) -> Result<String, String> {
         self.asked.borrow_mut().push(url.to_string());
         self.latest.clone()
     }
@@ -191,6 +229,11 @@ impl Fetch for FakeGitHub {
         std::fs::copy(from, dest).map_err(|e| e.to_string())?;
         Ok(())
     }
+}
+
+/// Where GitHub's `releases/latest` redirect lands for a release tagged `tag`.
+fn tag_page(tag: &str) -> String {
+    format!("{RELEASES_PAGE}/tag/{tag}")
 }
 
 /// A release tarball the way release.yml packs one: a single `bolide` at the root.
@@ -224,7 +267,7 @@ fn update_replaces_the_binary_with_the_newer_release() {
     let dir = TempDir::new("update-swap");
     let exe = an_installed_binary(dir.path());
     let github = FakeGitHub {
-        latest: Ok(r#"{"tag_name":"v0.2.0"}"#.into()),
+        latest: Ok(tag_page("v0.2.0")),
         tarball: Some(a_release_tarball(dir.path(), "new")),
         asked: RefCell::new(Vec::new()),
     };
@@ -246,7 +289,7 @@ fn update_replaces_the_binary_with_the_newer_release() {
     assert_eq!(
         github.asked.borrow().as_slice(),
         [
-            LATEST_RELEASE_API.to_string(),
+            LATEST_RELEASE_URL.to_string(),
             asset_url("0.2.0", "aarch64-apple-darwin")
         ]
     );
@@ -264,7 +307,7 @@ fn an_up_to_date_binary_downloads_nothing() {
     let exe = an_installed_binary(dir.path());
     for current in ["0.2.0", "0.3.0"] {
         let github = FakeGitHub {
-            latest: Ok(r#"{"tag_name":"v0.2.0"}"#.into()),
+            latest: Ok(tag_page("v0.2.0")),
             tarball: None,
             asked: RefCell::new(Vec::new()),
         };
@@ -287,7 +330,7 @@ fn a_failed_download_changes_nothing_and_says_where_to_look() {
     let dir = TempDir::new("update-404");
     let exe = an_installed_binary(dir.path());
     let github = FakeGitHub {
-        latest: Ok(r#"{"tag_name":"v0.2.0"}"#.into()),
+        latest: Ok(tag_page("v0.2.0")),
         tarball: None,
         asked: RefCell::new(Vec::new()),
     };
@@ -317,7 +360,7 @@ fn an_archive_without_a_bolide_binary_changes_nothing() {
         .unwrap()
         .success());
     let github = FakeGitHub {
-        latest: Ok(r#"{"tag_name":"v0.2.0"}"#.into()),
+        latest: Ok(tag_page("v0.2.0")),
         tarball: Some(tarball),
         asked: RefCell::new(Vec::new()),
     };
@@ -351,7 +394,7 @@ fn a_platform_without_a_release_is_told_so_before_anything_is_downloaded() {
     let dir = TempDir::new("update-no-target");
     let exe = an_installed_binary(dir.path());
     let github = FakeGitHub {
-        latest: Ok(r#"{"tag_name":"v0.2.0"}"#.into()),
+        latest: Ok(tag_page("v0.2.0")),
         tarball: None,
         asked: RefCell::new(Vec::new()),
     };
@@ -364,7 +407,7 @@ fn a_platform_without_a_release_is_told_so_before_anything_is_downloaded() {
 fn a_source_build_is_pointed_at_git_and_nothing_is_fetched() {
     let exe = Path::new("/home/me/bolide/target/debug/bolide");
     let github = FakeGitHub {
-        latest: Ok(r#"{"tag_name":"v0.2.0"}"#.into()),
+        latest: Ok(tag_page("v0.2.0")),
         tarball: None,
         asked: RefCell::new(Vec::new()),
     };
@@ -379,10 +422,22 @@ fn a_source_build_is_pointed_at_git_and_nothing_is_fetched() {
 #[test]
 fn check_asks_once_and_reports_both_versions() {
     let github = FakeGitHub {
-        latest: Ok(r#"{"tag_name":"v0.2.0"}"#.into()),
+        latest: Ok(tag_page("v0.2.0")),
         tarball: None,
         asked: RefCell::new(Vec::new()),
     };
     assert_eq!(update::latest_version(&github).unwrap(), "0.2.0");
-    assert_eq!(github.asked.borrow().as_slice(), [LATEST_RELEASE_API]);
+    assert_eq!(github.asked.borrow().as_slice(), [LATEST_RELEASE_URL]);
+}
+
+#[test]
+fn check_on_a_repository_with_no_release_says_so() {
+    let github = FakeGitHub {
+        latest: Ok(RELEASES_PAGE.to_string()),
+        tarball: None,
+        asked: RefCell::new(Vec::new()),
+    };
+    let err = update::latest_version(&github).unwrap_err();
+    assert!(err.message.contains(RELEASES_PAGE), "{}", err.message);
+    assert!(err.message.contains("tag"), "{}", err.message);
 }

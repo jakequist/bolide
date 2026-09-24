@@ -1,12 +1,19 @@
 //! `bolide update` — replace this binary with the latest GitHub release.
 //!
 //! The release is a tarball per target triple, `bolide-<version>-<target>.tar.gz`, with
-//! one `bolide` at its root; `install.sh` installs the same assets. `update` asks the
-//! GitHub Releases API which tag is latest, compares it with the version this binary was
-//! built as, and — when the release is newer — downloads the tarball for this platform,
-//! unpacks it, and renames the new binary over the running one. The rename is atomic on
-//! one filesystem, which is why the new binary is staged *beside* the old one rather than
-//! in a temp dir: an interrupted update leaves the old binary, never half of a new one.
+//! one `bolide` at its root; `install.sh` installs the same assets. `update` follows the
+//! `releases/latest` redirect on github.com to learn which tag is latest, compares it with
+//! the version this binary was built as, and — when the release is newer — downloads the
+//! tarball for this platform, unpacks it, and renames the new binary over the running
+//! one. The rename is atomic on one filesystem, which is why the new binary is staged
+//! *beside* the old one rather than in a temp dir: an interrupted update leaves the old
+//! binary, never half of a new one.
+//!
+//! **Not the GitHub API.** The REST API allows 60 unauthenticated calls an hour per IP,
+//! and behind a shared IP (an office, a CI fleet, a NAT'd cloud) that runs out and every
+//! answer is a 403. The web redirect from `releases/latest` to `releases/tag/<tag>`
+//! carries the same fact and is not metered that way. `install.sh` resolves it the same
+//! way.
 //!
 //! **HTTP goes through `curl`**, behind the [`Fetch`] seam. bolide's own HTTP client
 //! (`reqwest`, default features off) speaks plain HTTP to its loopback server and has no
@@ -34,9 +41,9 @@ pub const REPO: &str = repo!();
 /// The human-readable release list, named in every error.
 pub const RELEASES_PAGE: &str = concat!("https://github.com/", repo!(), "/releases");
 
-/// The API document naming the latest release.
-pub const LATEST_RELEASE_API: &str =
-    concat!("https://api.github.com/repos/", repo!(), "/releases/latest");
+/// Redirects to `releases/tag/<tag>` of the latest release, or to [`RELEASES_PAGE`] when
+/// there is none.
+pub const LATEST_RELEASE_URL: &str = concat!("https://github.com/", repo!(), "/releases/latest");
 
 /// The one command that installs bolide from scratch.
 pub const INSTALL_ONELINER: &str = concat!(
@@ -101,20 +108,24 @@ pub fn version_from_tag(tag: &str) -> Result<String, String> {
     Ok(version.to_string())
 }
 
-/// The version in a `GET /repos/…/releases/latest` body.
-pub fn parse_latest_release(body: &str) -> Result<String, String> {
-    let json: serde_json::Value = serde_json::from_str(body)
-        .map_err(|e| format!("the GitHub API answered with something that is not JSON ({e})"))?;
-    let tag = json
-        .get("tag_name")
-        .and_then(serde_json::Value::as_str)
+/// The version of the release a `releases/latest` redirect landed on: the tag in a
+/// `…/releases/tag/<tag>` URL, less its leading `v`. Takes the final URL or a raw
+/// `Location` value; surrounding whitespace (a header's CRLF) and a query or fragment are
+/// ignored, as is one trailing slash. Anything else — the redirect landing on the release
+/// list because nothing is released yet, say — is an error naming where it went.
+pub fn version_from_release_url(url: &str) -> Result<String, String> {
+    let trimmed = url.trim();
+    let path = trimmed.split(['?', '#']).next().unwrap_or_default();
+    let path = path.strip_suffix('/').unwrap_or(path);
+    let tag = path
+        .rsplit_once("/releases/tag/")
+        .map(|(_, tag)| tag)
+        .filter(|tag| !tag.is_empty() && !tag.contains('/'))
         .ok_or_else(|| {
-            let said = json
-                .get("message")
-                .and_then(serde_json::Value::as_str)
-                .map(|m| format!(" (GitHub said: {m})"))
-                .unwrap_or_default();
-            format!("the GitHub API answer carried no tag_name{said}")
+            format!(
+                "the latest-release redirect landed on {trimmed:?}, not on a release tag \
+                 (…/releases/tag/<tag>); is there a release yet?"
+            )
         })?;
     version_from_tag(tag)
 }
@@ -207,11 +218,18 @@ pub fn check_lines(current: &str, latest: &str) -> Vec<String> {
 
 /// How `update` reaches GitHub. [`Curl`] in the binary; a fake in the tests.
 pub trait Fetch {
-    /// The body at `url`, or a sentence saying why not.
-    fn text(&self, url: &str) -> Result<String, String>;
+    /// The URL that `url` ends at once its redirects are followed, or a sentence saying
+    /// why not.
+    fn resolve(&self, url: &str) -> Result<String, String>;
     /// Write the body at `url` to `dest`, or a sentence saying why not.
     fn download(&self, url: &str, dest: &Path) -> Result<(), String>;
 }
+
+/// Where `curl -o` throws a body away.
+#[cfg(windows)]
+const NULL_DEVICE: &str = "NUL";
+#[cfg(not(windows))]
+const NULL_DEVICE: &str = "/dev/null";
 
 /// [`Fetch`] by running `curl`.
 pub struct Curl;
@@ -239,15 +257,19 @@ impl Curl {
 }
 
 impl Fetch for Curl {
-    fn text(&self, url: &str) -> Result<String, String> {
-        let body = Curl::run(&[
+    fn resolve(&self, url: &str) -> Result<String, String> {
+        // `-w %{url_effective}` prints where `-L` ended, so no header is parsed here: no
+        // HTTP/1.1-vs-HTTP/2 case to get right, no CRLF.
+        let effective = Curl::run(&[
             "--max-time",
             "15",
-            "-H",
-            "Accept: application/vnd.github+json",
+            "-o",
+            NULL_DEVICE,
+            "-w",
+            "%{url_effective}",
             url,
         ])?;
-        Ok(String::from_utf8_lossy(&body).into_owned())
+        Ok(String::from_utf8_lossy(&effective).into_owned())
     }
 
     fn download(&self, url: &str, dest: &Path) -> Result<(), String> {
@@ -256,11 +278,11 @@ impl Fetch for Curl {
     }
 }
 
-/// The latest released version, per the GitHub API.
+/// The latest released version, per where [`LATEST_RELEASE_URL`] redirects.
 pub fn latest_version(fetch: &dyn Fetch) -> Result<String, CliError> {
     fetch
-        .text(LATEST_RELEASE_API)
-        .and_then(|body| parse_latest_release(&body))
+        .resolve(LATEST_RELEASE_URL)
+        .and_then(|url| version_from_release_url(&url))
         .map_err(|detail| {
             CliError::failure(format!(
                 "could not ask GitHub for the latest bolide release: {detail}\n\
