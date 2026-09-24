@@ -1,0 +1,26 @@
+[package]
+name = "bolide-server"
+description = "bolide's loopback HTTP server: the computer-use protocol over an RFB session."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+axum.workspace = true
+base64.workspace = true
+bolide-rfb.workspace = true
+png.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+bolide-testkit.workspace = true
+reqwest.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "rt-multi-thread", "sync", "time", "net"] }

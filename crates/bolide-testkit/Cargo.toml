@@ -1,0 +1,20 @@
+[package]
+name = "bolide-testkit"
+description = "An in-process fake RFB server, so every bolide test runs offline."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+bolide-rfb.workspace = true
+flate2.workspace = true
+png.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["io-util", "macros", "rt-multi-thread", "sync", "time", "net"] }

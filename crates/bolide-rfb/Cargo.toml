@@ -1,0 +1,21 @@
+[package]
+name = "bolide-rfb"
+description = "An async RFB 3.8 (VNC) client: handshake, VNC auth, Raw/CopyRect/ZRLE, pointer/key/clipboard."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+cipher.workspace = true
+des.workspace = true
+flate2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["io-util", "macros", "rt-multi-thread", "sync", "time", "net"] }

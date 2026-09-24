@@ -1,0 +1,44 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/bolide-rfb",
+    "crates/bolide-testkit",
+    "crates/bolide-server",
+    "crates/bolide-cli",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.82"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/jakequist/bolide"
+authors = ["the bolide contributors"]
+
+# One pin per dependency, for the whole workspace. A version that appears twice is a
+# version that can disagree with itself; every crate says `workspace = true`.
+[workspace.dependencies]
+anyhow = "1"
+async-trait = "0.1"
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+base64 = "0.22"
+cipher = "0.4"
+clap = { version = "4", features = ["derive", "env"] }
+des = "0.8"
+flate2 = "1"
+libc = "0.2"
+png = "0.17"
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "fs", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+bolide-rfb = { path = "crates/bolide-rfb" }
+bolide-testkit = { path = "crates/bolide-testkit" }
+bolide-server = { path = "crates/bolide-server" }
+
+[profile.release]
+strip = true
