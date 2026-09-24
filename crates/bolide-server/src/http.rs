@@ -381,6 +381,9 @@ pub(crate) fn router(session: Arc<dyn Session>, config: ServerConfig) -> Router 
             require_token,
         ))
         .route("/healthz", get(healthz))
+        // No body cap: axum's default 2 MiB would refuse a large clipboard paste, and
+        // how much to paste is the caller's decision.
+        .layer(axum::extract::DefaultBodyLimit::disable())
         .with_state(state)
 }
 

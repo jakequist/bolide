@@ -7,8 +7,10 @@ mod common;
 
 use std::cell::Cell;
 
+use bolide_cli::cli::{command_line_credentials, parse_args, parse_target, Command, Password};
 use bolide_cli::daemon::{self, ChildStatus};
 use bolide_cli::error::EXIT_FAILURE;
+use bolide_cli::run::PASSWORD_ENV;
 use bolide_cli::state::{self, SessionState};
 
 use common::TempDir;
@@ -24,20 +26,104 @@ fn a_state() -> SessionState {
     }
 }
 
+/// The child's argv for a `connect` command line (without the program name).
+fn child_of(line: &[&str]) -> Vec<String> {
+    let argv: Vec<String> = std::iter::once("bolide")
+        .chain(line.iter().copied())
+        .map(String::from)
+        .collect();
+    let args = match parse_args(&argv).expect("a valid command line").command {
+        Command::Connect(c) => c,
+        other => panic!("not connect: {other:?}"),
+    };
+    let target = parse_target(&args.target).expect("a valid target");
+    let creds = command_line_credentials(&target, &args).expect("consistent credentials");
+    daemon::child_args(&args, &target, &creds)
+}
+
 #[test]
 fn the_child_is_re_execed_with_foreground() {
     assert_eq!(
-        daemon::child_args(&["connect".into(), "vnc://mac01.local".into()]),
-        vec!["connect", "vnc://mac01.local", "--foreground"]
+        child_of(&["connect", "vnc://mac01.local"]),
+        vec![
+            "connect",
+            "vnc://mac01.local:5900",
+            "--listen",
+            "127.0.0.1:0",
+            "--foreground"
+        ]
     );
 }
 
 #[test]
-fn foreground_is_not_added_twice() {
+fn the_child_keeps_every_non_secret_option() {
     assert_eq!(
-        daemon::child_args(&["connect".into(), "--foreground".into()]),
-        vec!["connect", "--foreground"]
+        child_of(&[
+            "connect",
+            "vnc://[::1]:5901",
+            "--username",
+            "jake",
+            "--password-file",
+            "/tmp/p",
+            "--listen",
+            "127.0.0.1:53211",
+            "--token",
+            "t",
+            "--foreground",
+        ]),
+        vec![
+            "connect",
+            "vnc://[::1]:5901",
+            "--username",
+            "jake",
+            "--password-file",
+            "/tmp/p",
+            "--listen",
+            "127.0.0.1:53211",
+            "--token",
+            "t",
+            "--foreground",
+        ]
     );
+}
+
+#[test]
+fn the_child_never_sees_the_password_in_its_argv() {
+    for line in [
+        vec!["connect", "vnc://h", "--password", "hunter2"],
+        vec!["connect", "--password=hunter2", "vnc://h"],
+        vec!["connect", "vnc://jake:hunter2@h"],
+        vec!["connect", "vnc://jake:hunter%32@h"],
+    ] {
+        let child = child_of(&line);
+        assert!(
+            !child
+                .iter()
+                .any(|a| a.contains("hunter") || a.starts_with("--password")),
+            "the daemon's argv would show it in `ps` for its whole life: {child:?}"
+        );
+        assert!(child.contains(&"vnc://h:5900".to_string()), "{child:?}");
+    }
+}
+
+#[test]
+fn a_url_username_reaches_the_child_as_a_flag() {
+    let child = child_of(&["connect", "vnc://jake:hunter2@h"]);
+    let at = child
+        .iter()
+        .position(|a| a == "--username")
+        .expect("no --username");
+    assert_eq!(child[at + 1], "jake");
+}
+
+#[test]
+fn a_command_line_password_reaches_the_child_through_its_environment() {
+    let password: Password = "hunter2".parse().unwrap();
+    assert_eq!(
+        daemon::child_env(Some(&password)),
+        vec![(PASSWORD_ENV.to_string(), "hunter2".to_string())]
+    );
+    assert!(daemon::child_env(None).is_empty());
 }
 
 #[test]

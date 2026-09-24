@@ -27,7 +27,9 @@
 //! - **`key`** is `bolide_rfb::keysym::parse_chord` pressed in order and released in
 //!   **reverse** order, so modifiers surround the key. An unknown name is
 //!   [`ActionError::UnknownKey`], never a silently dropped keypress.
-//! - **`wait`** is a single [`RfbOp::Sleep`], clamped to `wire::MAX_WAIT_SECONDS`.
+//! - **`wait`** is a single [`RfbOp::Sleep`] of exactly the duration asked for; a
+//!   negative or NaN duration is zero. **`scroll`** sends every notch asked for. Neither
+//!   is capped: how long to wait and how far to scroll are the caller's decisions.
 //! - **`screenshot`** and **`cursor_position`** plan *no* ops — they are answered from
 //!   state, and returning an empty plan (rather than being special-cased upstream) is
 //!   what keeps the HTTP layer from growing branches.
@@ -41,7 +43,7 @@ use bolide_rfb::proto::{
 };
 use bolide_rfb::Session;
 
-use crate::wire::{ComputerAction, ScrollDirection, MAX_SCROLL_AMOUNT, MAX_WAIT_SECONDS};
+use crate::wire::{ComputerAction, ScrollDirection};
 
 /// One thing to do to the RFB session.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -217,7 +219,7 @@ pub fn plan(
             // The coordinate is checked even for a scroll of nothing: a caller that
             // named an off-screen point has a bug either way.
             let (x, y) = ctx.check(*coordinate)?;
-            let notches = (*scroll_amount).min(MAX_SCROLL_AMOUNT);
+            let notches = *scroll_amount;
             if notches == 0 {
                 // Not even the move. Relocating the pointer for a scroll of nothing
                 // changes what the *next* wheel event would land on.
@@ -266,7 +268,7 @@ pub fn plan(
             let seconds = if duration.is_nan() {
                 0.0
             } else {
-                duration.clamp(0.0, MAX_WAIT_SECONDS)
+                duration.max(0.0)
             };
             vec![RfbOp::Sleep {
                 ms: (seconds * 1000.0) as u64,
@@ -304,7 +306,7 @@ pub async fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wire::{ScrollDirection, MAX_SCROLL_AMOUNT, MAX_WAIT_SECONDS};
+    use crate::wire::ScrollDirection;
     use bolide_rfb::proto::{
         BUTTON_LEFT, BUTTON_MIDDLE, BUTTON_RIGHT, BUTTON_WHEEL_DOWN, BUTTON_WHEEL_UP,
     };
@@ -458,31 +460,36 @@ mod tests {
     }
 
     #[test]
-    fn an_over_large_scroll_is_clamped_not_refused() {
+    fn a_large_scroll_is_honoured_in_full() {
+        // No cap: a caller that asks for five hundred notches gets five hundred.
         let planned = ops(ComputerAction::Scroll {
             coordinate: [3, 4],
             scroll_direction: ScrollDirection::Down,
-            scroll_amount: 10_000,
+            scroll_amount: 500,
         });
-        assert_eq!(planned.len(), 1 + 2 * MAX_SCROLL_AMOUNT as usize);
+        assert_eq!(planned.len(), 1 + 2 * 500);
     }
 
     #[test]
-    fn wait_is_one_sleep_clamped_to_the_maximum() {
+    fn wait_is_one_sleep_of_exactly_what_was_asked() {
         assert_eq!(
             ops(ComputerAction::Wait { duration: 1.5 }),
             vec![RfbOp::Sleep { ms: 1500 }]
         );
         assert_eq!(
             ops(ComputerAction::Wait { duration: 9_000.0 }),
-            vec![RfbOp::Sleep {
-                ms: (MAX_WAIT_SECONDS * 1000.0) as u64
-            }]
+            vec![RfbOp::Sleep { ms: 9_000_000 }],
+            "a long wait is the caller's call, not clamped"
         );
         assert_eq!(
             ops(ComputerAction::Wait { duration: -3.0 }),
             vec![RfbOp::Sleep { ms: 0 }],
             "a negative wait is zero, not a panic"
+        );
+        assert_eq!(
+            ops(ComputerAction::Wait { duration: f64::NAN }),
+            vec![RfbOp::Sleep { ms: 0 }],
+            "NaN is no wait, decided rather than fallen into"
         );
     }
 

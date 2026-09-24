@@ -45,7 +45,7 @@ impl CliError {
         }
     }
 
-    /// A usage error, including the refused password — exit 2.
+    /// A usage error — exit 2.
     pub fn usage(message: impl Into<String>) -> CliError {
         CliError {
             code: EXIT_USAGE,

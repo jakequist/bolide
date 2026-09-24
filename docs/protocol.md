@@ -1,6 +1,6 @@
 # bolide — the HTTP protocol
 
-Everything bolide exposes, on loopback, as JSON.
+Everything bolide exposes, on loopback by default (`--listen` puts it anywhere), as JSON.
 
 The action vocabulary is **1:1 with Anthropic's `computer` tool**: an agent that already
 holds that tool's schema can POST the tool input object unchanged. That is the design
@@ -61,8 +61,9 @@ fires several actions at once cannot predict their order, and should await each 
 thinks the screen is bigger than it is needs to be told rather than quietly redirected
 to the edge.
 
-`scroll_amount` is clamped to 20 notches and `duration` to 60 seconds. Clamped, never
-refused: an over-large ask costs a re-check, not the turn.
+`scroll_amount` and `duration` are honoured in full — there is no cap on how far a caller
+scrolls or how long it waits; a negative or NaN `duration` is zero. Request bodies have no
+size limit either, so a large clipboard paste goes through.
 
 ### `screenshot`
 
@@ -121,7 +122,7 @@ Sent as RFB ClientCutText, which is **latin-1**: a character outside it becomes 
   "width": 1728,
   "height": 1117,
   "painted": true,
-  "version": "0.0.0"
+  "version": "0.1.0"
 }
 ```
 

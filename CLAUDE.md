@@ -11,6 +11,20 @@ depends on nothing in that parent — no shared crates, no shared config, no imp
 across the boundary, no paths that point outside this directory. Keep it that way:
 every file here must make sense, unedited, as the root of its own repository.
 
+## bolide does not refuse
+
+bolide is a tool for power users who understand what they are pointing it at. It does
+not refuse an explicit request for the user's own good: no refusing a password on the
+command line, a non-loopback `--listen`, a long `wait`, a big scroll or a big paste.
+**Defaults are safe and every one is overridable** — loopback unless `--listen` says
+otherwise, no PNG down a terminal unless `--out -` asks for it. Advice belongs in
+`--help`; a runtime refusal or a nagging warning does not. Before adding a guardrail,
+ask whether it stops a mistake or stops a choice — only the first belongs here.
+
+What stays: **secrets never leak** (below), correctness guarantees, and validation that
+rejects *malformed* input (an off-screen coordinate, an unknown key name, a port that is
+not a port) as opposed to input that is merely risky.
+
 ## TDD is non-negotiable
 
 Write the failing test first, then the implementation. If you find yourself writing
@@ -78,10 +92,11 @@ warning nobody is forced to fix is a warning everybody scrolls past.
   half (`src/lib.rs` and friends); `main.rs` parses arguments and prints. Same for the
   HTTP layer: decisions go in `plan()`, which is pure.
 
-- **Secrets never widen.** A password enters through a file or an environment variable
-  and leaves through the RFB handshake. It does not reach argv, the state file,
-  `/status`, a log line, or a `Debug` impl — `bolide_rfb::Config` redacts it, and there
-  is a test that says so. When you add a type that can hold one, add that test.
+- **Secrets never widen.** A password enters through the URL, `--password`, a file or
+  an environment variable, and leaves through the RFB handshake. It does not reach the
+  daemon's argv, the state file, `/status`, a log line, an error message, or a `Debug`
+  impl — `bolide_cli::cli::Password` and `bolide_rfb::Config` redact it, and there are
+  tests that say so. When you add a type that can hold one, add that test.
 
 - **Say what the desktop actually told us.** An unpainted framebuffer is black at
   exactly screen dimensions and is indistinguishable from a real black screen; a
@@ -98,11 +113,15 @@ warning nobody is forced to fix is a warning everybody scrolls past.
 
 ## Releasing
 
-Not yet. bolide has no published version, no tags and no crates.io presence; `version`
-is `0.0.0` across the workspace. Once its own repository is live, releasing becomes
-a tag plus `cargo publish` for the four crates in dependency order (`bolide-rfb`,
-`bolide-testkit`, `bolide-server`, `bolide-cli`) — and this section gets replaced by the
-real procedure rather than this promise.
+A tag `vX.Y.Z` matching `[workspace.package] version` → `.github/workflows/release.yml`,
+which builds the four release targets and publishes the tarballs plus `install.sh` as a
+GitHub release. The tarball name and shape (`bolide-<version>-<target>.tar.gz`, one
+`bolide` at the root) is stated three times — `release.yml`, `install.sh`, and
+`bolide_cli::update::asset_name` — because a shell script, a workflow and a binary cannot
+share a constant; `scripts/install-selftest.sh` and `tests/update.rs` pin the two ends that
+can be tested. Change one, change all three. The procedure is in [README.md](README.md)
+§ Releasing. `.github/workflows/` runs on GitHub, for the public repository; the parent
+monorepo does not run it.
 
 ## Where this lives
 

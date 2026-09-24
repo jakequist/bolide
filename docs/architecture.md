@@ -133,7 +133,9 @@ screenshot` a race, and that is the first thing anybody types.
 
 The state file (`$XDG_STATE_HOME/bolide/session.json`, or
 `~/Library/Application Support/bolide/` on macOS, mode 0600) holds the endpoint, the pid,
-the remote and the bearer token. It never holds a password. A file whose pid is gone is
+the remote and the bearer token. It never holds a password — and neither does the
+detached child's argv: a password given on the command line reaches the daemon through its
+environment (`BOLIDE_PASSWORD`), because the daemon lives for hours and argv is in `ps`. A file whose pid is gone is
 treated as absent and replaced, so a crashed daemon does not leave every later command
 timing out against a dead port.
 

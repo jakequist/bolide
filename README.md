@@ -44,11 +44,31 @@ machine can expose several; an agent on a Linux box can drive a Mac.
 ## Install
 
 ```console
-$ git clone https://github.com/jakequist/bolide && cd bolide
-$ cargo install --path crates/bolide-cli
+$ curl -fsSL https://raw.githubusercontent.com/jakequist/bolide/main/install.sh | sh
 ```
 
-Linux and macOS. No system dependencies beyond a Rust toolchain.
+Prebuilt for macOS (Apple Silicon and Intel) and Linux (x86_64 and aarch64, static musl
+builds that run on any distro). The script installs to `/usr/local/bin` when it can write
+there and `~/.local/bin` otherwise. `BOLIDE_VERSION=0.1.0` pins a version and
+`BOLIDE_INSTALL_DIR=DIR` picks the directory.
+
+From source, on any platform with a Rust toolchain:
+
+```console
+$ cargo install --git https://github.com/jakequist/bolide bolide-cli
+```
+
+### Updating
+
+```console
+$ bolide update --check     # installed and latest versions; changes nothing
+$ bolide update             # replace this binary with the latest release
+```
+
+`update` downloads the release for this platform and renames it over the running
+binary in one atomic step, so an interrupted update leaves the old binary in place. It
+needs `curl` and `tar`, which macOS and nearly every Linux already have. A binary built
+with `cargo build` is updated with `git pull` instead, and `update` says so.
 
 ## Try it against a real desktop
 
@@ -77,7 +97,7 @@ Then `bolide screenshot --out /tmp/s.png` and look at it.
 | `bolide connect vnc://HOST[:PORT]` | connect and start the server (daemonises; `--foreground` to stay attached) |
 | `bolide status` | what is connected, and where the server is listening |
 | `bolide disconnect` | stop the server and close the RFB session |
-| `bolide screenshot [--out FILE]` | the current screen as PNG |
+| `bolide screenshot [--out FILE]` | the current screen as PNG (`--out -` for stdout, even on a terminal) |
 | `bolide click X Y [--button left\|right\|middle]` | a click |
 | `bolide move X Y` | move the pointer |
 | `bolide type TEXT` | type literal text |
@@ -85,22 +105,35 @@ Then `bolide screenshot --out /tmp/s.png` and look at it.
 | `bolide scroll X Y --dir up\|down [--amount N]` | wheel notches under the pointer |
 | `bolide clipboard push [TEXT \| --stdin]` | set the remote clipboard |
 | `bolide clipboard pull` | the last clipboard the desktop sent |
+| `bolide update [--check]` | replace this binary with the latest release |
+| `bolide --version` | the installed version |
 
-`connect` options: `--username U`, `--password-file F` (or the `BOLIDE_PASSWORD`
-environment variable), `--listen 127.0.0.1:PORT`, `--token T`, `--foreground`.
+`connect` options: `--username U`, `--password PW`, `--password-file F` (or the
+`BOLIDE_PASSWORD` environment variable), `--listen ADDR`, `--token T`, `--foreground`.
+Credentials can also ride in the URL: `vnc://jake:pw@mac01.local` (percent-encode an `@`,
+`:` or `%` in them).
 
 ## Passwords
 
-**`--password` on the command line is refused**, with an error naming the alternatives.
-argv is not private: `ps` shows it, the shell logs it, and CI prints it. Use
-`--password-file` (read once, never stored) or `BOLIDE_PASSWORD`.
+Four ways in, all supported: the URL (`vnc://user:pw@host`), `--password PW`,
+`--password-file F` (read once, never stored), and the `BOLIDE_PASSWORD` environment
+variable. The URL or the flag wins over the file, which wins over the variable; giving
+both the URL's password and a password flag is an error rather than a guess.
 
-The password never reaches the state file, `/status`, any log line, or any `Debug`
-output. bolide's own state file holds the endpoint, the pid and the server's bearer
-token, at mode 0600.
+A password on the command line is visible to other local users through `ps` and is kept
+in your shell history. On a machine you share, the file or the variable is the better
+choice — bolide leaves that decision to you.
+
+Wherever it comes from, the password goes nowhere else. It never reaches the state file,
+`/status` (which reports `host:port`, never the URL), a log line, an error message or any
+`Debug` output. The background daemon `connect` starts receives it through its
+environment, not its command line, so it is not in `ps` for the life of the session.
+bolide's own state file holds the endpoint, the pid and the server's bearer token, at mode
+0600.
 
 The server binds `127.0.0.1` on a kernel-assigned port by default, because it hands its
-caller full control of somebody's desktop. `--token` adds a bearer check on top.
+caller full control of somebody's desktop. `--listen 0.0.0.0:8000` (or any address)
+exposes it wherever you say, and `--token` adds a bearer check.
 
 ## The HTTP protocol
 
@@ -122,6 +155,25 @@ caller full control of somebody's desktop. `--token` adds a bearer check on top.
   implemented, so a character outside latin-1 becomes `?`.
 - Reading the remote clipboard is a *cache* of what the desktop volunteered. RFB has no
   "what is on your clipboard" message.
+
+## Releasing
+
+Releases are cut by pushing a tag; nothing is published by hand.
+
+```console
+$ # bump [workspace.package] version in Cargo.toml to X.Y.Z, then
+$ cargo check --workspace          # refreshes Cargo.lock
+$ git commit -am "release: vX.Y.Z"
+$ git tag vX.Y.Z && git push origin main vX.Y.Z
+```
+
+`.github/workflows/release.yml` refuses a tag that disagrees with `Cargo.toml`, runs the
+full suite, builds `aarch64-apple-darwin`, `x86_64-apple-darwin`,
+`x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`, and attaches
+`bolide-X.Y.Z-<target>.tar.gz` for each (one `bolide` binary inside), a `SHA256SUMS` and
+`install.sh` to the GitHub release — the assets `install.sh` and `bolide update` both
+download. `.github/workflows/ci.yml` runs the gate on Linux and on Apple Silicon macOS
+for every push to `main` and every pull request.
 
 ## Repository
 

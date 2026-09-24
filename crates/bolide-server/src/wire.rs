@@ -83,7 +83,7 @@ pub enum ComputerAction {
         coordinate: [i32; 2],
         /// `up` or `down`. RFB has no horizontal wheel, so nothing else is accepted.
         scroll_direction: ScrollDirection,
-        /// Notches. Clamped to [`MAX_SCROLL_AMOUNT`].
+        /// Notches. Every one is sent; there is no cap.
         scroll_amount: u32,
     },
     /// Where bolide last put the pointer.
@@ -95,7 +95,7 @@ pub enum ComputerAction {
     CursorPosition,
     /// Do nothing for `duration` **seconds** (the `computer` tool's unit).
     Wait {
-        /// Seconds. Clamped to [`MAX_WAIT_SECONDS`].
+        /// Seconds. Honoured in full; negative or NaN is zero.
         duration: f64,
     },
 }
@@ -109,14 +109,6 @@ pub enum ScrollDirection {
     /// Wheel down (RFB button 5).
     Down,
 }
-
-/// Upper bound on `scroll_amount`. A model that asks for a thousand notches gets
-/// twenty and can ask again; it does not get to hold the session for a minute.
-pub const MAX_SCROLL_AMOUNT: u32 = 20;
-
-/// Upper bound on `wait`'s `duration`, in seconds. Same reasoning as scroll: clamped,
-/// never refused, so an over-long wait costs a re-check rather than the turn.
-pub const MAX_WAIT_SECONDS: f64 = 60.0;
 
 /// A base64 PNG, as `/computer` returns it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

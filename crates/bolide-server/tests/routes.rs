@@ -515,6 +515,20 @@ async fn posting_the_clipboard_reaches_the_session_as_cut_text() {
 }
 
 #[tokio::test]
+async fn a_clipboard_bigger_than_a_framework_default_limit_is_accepted() {
+    // axum caps a body at 2 MiB unless told otherwise; bolide does not cap what a
+    // caller may paste.
+    let h = Harness::open(Fake::new(8, 8)).await;
+    let text = "x".repeat(3 * 1024 * 1024);
+    let response = h
+        .post("/clipboard", &serde_json::json!({ "text": text }))
+        .await;
+    assert_eq!(response.status().as_u16(), 200);
+    assert_eq!(h.session.calls(), vec![Call::CutText(text)]);
+    h.shutdown().await;
+}
+
+#[tokio::test]
 async fn status_reports_the_session_without_credentials() {
     let h = Harness::open(Fake::new(1728, 1117)).await;
     let body: StatusResponse = h.get("/status").await.json().await.expect("a body");

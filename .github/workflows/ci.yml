@@ -1,0 +1,55 @@
+name: ci
+
+# The gate from CLAUDE.md, on Linux and on Apple Silicon macOS. macos-14 is an arm64
+# runner, so this is where bolide is actually built and tested as an aarch64-apple-darwin
+# binary on every change.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt
+        run: cargo fmt --all --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace
+
+      # install.sh runs under whatever `sh` the machine has — dash on Ubuntu, bash-as-sh
+      # on macOS — so it is parsed and exercised on both.
+      - name: install.sh parses
+        run: sh -n install.sh
+
+      - name: install.sh is shellcheck-clean
+        if: runner.os == 'Linux'
+        run: shellcheck install.sh scripts/install-selftest.sh
+
+      - name: install.sh selftest (offline)
+        run: bash scripts/install-selftest.sh

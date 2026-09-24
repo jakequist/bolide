@@ -15,7 +15,7 @@ use bolide_rfb::Session;
 use bolide_server::wire::{ComputerAction, StatusResponse};
 
 use crate::api::{self, Client};
-use crate::cli::{Cli, ClipboardCommand, Command, ConnectArgs};
+use crate::cli::{Cli, ClipboardCommand, Command, ConnectArgs, Credentials, Target};
 use crate::daemon;
 use crate::error::{CliError, Stream, EXIT_OK};
 use crate::state::{self, SessionState};
@@ -39,7 +39,7 @@ pub fn main(argv: &[String]) -> u8 {
         Ok(rt) => rt,
         Err(e) => return report(CliError::failure(format!("could not start a runtime: {e}"))),
     };
-    match runtime.block_on(run(cli, argv)) {
+    match runtime.block_on(run(cli)) {
         Ok(()) => EXIT_OK,
         Err(stop) => report(stop),
     }
@@ -56,9 +56,9 @@ fn report(stop: CliError) -> u8 {
 }
 
 /// Run one command.
-pub async fn run(cli: Cli, argv: &[String]) -> Result<(), CliError> {
+pub async fn run(cli: Cli) -> Result<(), CliError> {
     match cli.command {
-        Command::Connect(args) => connect(args, argv).await,
+        Command::Connect(args) => connect(args).await,
         Command::Status => status().await,
         Command::Disconnect => disconnect(),
         Command::Screenshot { out } => screenshot(out.as_deref()).await,
@@ -70,6 +70,7 @@ pub async fn run(cli: Cli, argv: &[String]) -> Result<(), CliError> {
             act(api::action_for_scroll(x, y, dir, amount)).await
         }
         Command::Clipboard { what } => clipboard(what).await,
+        Command::Update { check } => crate::update::run(check),
     }
 }
 
@@ -93,26 +94,36 @@ pub enum Sink {
     Stdout,
 }
 
-/// Decide where a screenshot goes, refusing to spray PNG across a terminal.
+/// Decide where a screenshot goes.
+///
+/// With no `--out` and a terminal on stdout, the default is to stop and ask, because a
+/// megabyte of PNG through a tty is rarely what anybody meant; `--out -` says it was.
 pub fn screenshot_sink(out: Option<&Path>, stdout_is_terminal: bool) -> Result<Sink, CliError> {
     match out {
+        Some(path) if path == Path::new("-") => Ok(Sink::Stdout),
         Some(path) => Ok(Sink::File(path.to_path_buf())),
         None if stdout_is_terminal => Err(CliError::usage(
-            "refusing to write PNG bytes to a terminal: pass `--out FILE.png`, or pipe \
-             this command somewhere",
+            "stdout is a terminal, so the PNG needs somewhere to go: pass `--out FILE.png`, \
+             pipe this command somewhere, or `--out -` to write it to the terminal anyway",
         )),
         None => Ok(Sink::Stdout),
     }
 }
 
-/// Where the password comes from: `--password-file` first, then `BOLIDE_PASSWORD`.
+/// Where the password comes from: the command line (the URL or `--password`) first,
+/// then `--password-file`, then `BOLIDE_PASSWORD`.
 ///
-/// A trailing newline is the editor's, not the password's, so it is trimmed — but
-/// nothing else is, because leading whitespace could be real.
+/// Explicit beats inherited. A trailing newline in the file is the editor's, not the
+/// password's, so it is trimmed — but nothing else is, because leading whitespace could
+/// be real.
 pub fn resolve_password(
+    flag: Option<&str>,
     file: Option<&Path>,
     env: Option<String>,
 ) -> Result<Option<String>, CliError> {
+    if let Some(password) = flag {
+        return Ok(Some(password.to_string()));
+    }
     if let Some(path) = file {
         let raw = std::fs::read_to_string(path).map_err(|e| {
             CliError::failure(format!(
@@ -294,8 +305,9 @@ fn disconnect() -> Result<(), CliError> {
     Ok(())
 }
 
-async fn connect(args: ConnectArgs, argv: &[String]) -> Result<(), CliError> {
+async fn connect(args: ConnectArgs) -> Result<(), CliError> {
     let target = crate::cli::parse_target(&args.target).map_err(CliError::usage)?;
+    let creds = crate::cli::command_line_credentials(&target, &args)?;
     let dir = state::require_state_dir().map_err(|e| CliError::failure(e.to_string()))?;
 
     if let Some(existing) = state::load_in(&dir) {
@@ -306,19 +318,25 @@ async fn connect(args: ConnectArgs, argv: &[String]) -> Result<(), CliError> {
     }
 
     if args.foreground {
-        serve_foreground(target, args, &dir).await
+        serve_foreground(target, creds, args, &dir).await
     } else {
-        spawn_and_wait(argv, &dir)
+        spawn_and_wait(&args, &target, &creds, &dir)
     }
 }
 
 /// The parent half of daemonising: re-exec detached, then wait for the state file.
-fn spawn_and_wait(argv: &[String], dir: &Path) -> Result<(), CliError> {
+fn spawn_and_wait(
+    args: &ConnectArgs,
+    target: &Target,
+    creds: &Credentials,
+    dir: &Path,
+) -> Result<(), CliError> {
     let exe = daemon::current_exe()?;
     let log = state::log_path(dir);
-    let child_args = daemon::child_args(&argv[1..]);
+    let child_args = daemon::child_args(args, target, creds);
+    let child_env = daemon::child_env(creds.password.as_ref());
 
-    let mut child = daemon::spawn_detached(&exe, &child_args, &log)
+    let mut child = daemon::spawn_detached(&exe, &child_args, &child_env, &log)
         .map_err(|e| CliError::failure(format!("could not start the bolide daemon: {e}")))?;
     let pid = child.id();
 
@@ -347,20 +365,23 @@ fn spawn_and_wait(argv: &[String], dir: &Path) -> Result<(), CliError> {
 
 /// The child half — or what `--foreground` does when a person asks for it directly.
 async fn serve_foreground(
-    target: crate::cli::Target,
+    target: Target,
+    creds: Credentials,
     args: ConnectArgs,
     dir: &Path,
 ) -> Result<(), CliError> {
     init_tracing();
 
     let password = resolve_password(
+        creds.password.as_ref().map(|p| p.expose()),
         args.password_file.as_deref(),
         std::env::var(PASSWORD_ENV).ok(),
     )?;
-    // The password lives exactly here: read from a file or the environment, handed to
-    // the handshake, and dropped. It is not put in `args`, the state file or a log.
+    // The password lives exactly here: from the command line, a file or the
+    // environment, handed to the handshake, and dropped. It is not put in the state
+    // file, `/status` or a log; `target` prints as host:port only.
     let config = bolide_rfb::Config {
-        username: args.username.clone(),
+        username: creds.username.clone(),
         password,
         ..Default::default()
     };
@@ -391,7 +412,7 @@ async fn serve_foreground(
         endpoint: endpoint.clone(),
         pid: std::process::id(),
         remote: remote.clone(),
-        username: args.username.clone(),
+        username: creds.username.clone(),
         token: args.token.clone(),
         started_at: state::now_rfc3339(),
     };

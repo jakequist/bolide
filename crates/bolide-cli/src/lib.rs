@@ -3,11 +3,12 @@
 //! # The commands
 //!
 //! ```text
-//! bolide connect vnc://HOST[:PORT] [--username U] [--password-file F] [--listen ADDR]
-//!                                 [--token T] [--foreground]
+//! bolide connect vnc://[USER[:PASSWORD]@]HOST[:PORT] [--username U]
+//!                [--password PW | --password-file F] [--listen ADDR] [--token T]
+//!                [--foreground]
 //! bolide status
 //! bolide disconnect
-//! bolide screenshot [--out FILE.png]
+//! bolide screenshot [--out FILE.png | --out -]
 //! bolide click X Y [--button left|right|middle]
 //! bolide move X Y
 //! bolide type TEXT
@@ -15,6 +16,7 @@
 //! bolide scroll X Y --dir up|down [--amount N]
 //! bolide clipboard push [TEXT | --stdin]
 //! bolide clipboard pull
+//! bolide update [--check]
 //! ```
 //!
 //! `connect` is the only command that touches RFB. Everything else is an HTTP call to
@@ -27,18 +29,21 @@
 //!
 //! # Passwords
 //!
-//! **`--password` on the command line is refused.** Not warned about — refused, with
-//! exit code 2 and a message naming `--password-file` and `BOLIDE_PASSWORD`. The reason
-//! is that argv is world-readable on every machine bolide targets: `ps aux` shows it,
-//! the shell writes it to history, and a CI log that echoes a command line publishes
-//! it. A warning would leave the password exposed and the user reassured. The flag
-//! exists in the parser *only* so the error can be specific; its value is never read.
-//! A password inside the target URL (`vnc://user:pw@host`) is refused for the same
-//! reason, by [`cli::parse_target`].
+//! A password comes from, in order: the target URL (`vnc://user:pw@host`,
+//! percent-decoded) or `--password PW` — giving both, or either with
+//! `--password-file`, is a usage error — then `--password-file F`, then the
+//! `BOLIDE_PASSWORD` environment variable. All four are supported. The help notes that
+//! argv is visible to other local users and to shell history and suggests the file or the
+//! variable on a shared machine; that is advice, and the choice is the user's.
 //!
-//! The password never reaches: the state file, `/status`, any log line, or `Debug` of
-//! `bolide_rfb::Config` (which redacts it). It is read from the file or the environment,
-//! handed to the RFB handshake, and dropped.
+//! What bolide guarantees is that the password goes nowhere else. It never reaches the
+//! state file, `/status` (whose `remote` is `host:port`, never the URL), any log line, an
+//! error message ([`cli::redact_password`] cuts it out of a parse error that quotes
+//! argv), or `Debug` ([`cli::Password`] and `bolide_rfb::Config` both redact). And the
+//! daemon `connect` re-execs gets it **through its environment, not its argv**
+//! ([`daemon::child_args`] rebuilds the command line from what was parsed and has no
+//! password field to write), so a process that lives for hours does not show it in `ps`
+//! for all of them.
 //!
 //! # The state file
 //!
@@ -80,9 +85,10 @@
 //! # Output
 //!
 //! Human-readable by default, one fact per line. `screenshot` without `--out` writes
-//! PNG bytes to stdout **only when stdout is not a terminal**; to a terminal it is an
-//! error naming `--out`, because a megabyte of PNG through a tty is not a thing anyone
-//! meant. Exit codes: 0 success, 1 failure, 2 usage/refused-password, 3 not connected.
+//! PNG bytes to stdout when stdout is not a terminal; to a terminal it stops and names
+//! `--out`, because a megabyte of PNG through a tty is rarely what was meant — and
+//! `--out -` writes it there anyway. Exit codes: 0 success, 1 failure, 2 usage, 3 not
+//! connected.
 
 #![deny(missing_docs)]
 
@@ -94,6 +100,7 @@ pub mod daemon;
 pub mod error;
 pub mod run;
 pub mod state;
+pub mod update;
 
 pub use error::CliError;
 pub use state::{state_dir, SessionState};

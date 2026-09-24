@@ -2,7 +2,11 @@
 //!
 //! The protocol is three steps, and only the middle one is hard to test:
 //!
-//! 1. [`child_args`] — the same command line with `--foreground` appended. Pure.
+//! 1. [`child_args`] and [`child_env`] — the parsed `connect` rebuilt as a command line
+//!    with `--foreground`, and **no password in it**; a password that came from the
+//!    command line (the URL or `--password`) travels in the child's environment
+//!    instead, because a daemon lives for hours and its argv is in `ps` for all of
+//!    them. Pure.
 //! 2. [`spawn_detached`] — fork/exec with `setsid` and stdio pointed at the log.
 //!    **Not unit-tested**: it is a `pre_exec` closure in a forked child, and there is no
 //!    seam that would let a test observe it without actually forking. It is kept as
@@ -18,7 +22,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
+use crate::cli::{ConnectArgs, Credentials, Password, Target};
 use crate::error::CliError;
+use crate::run::PASSWORD_ENV;
 use crate::state::{self, SessionState};
 
 /// How long the parent waits for the child, as a number of [`NAP`]s.
@@ -39,15 +45,38 @@ pub enum ChildStatus {
     Exited(i32),
 }
 
-/// The command line the detached child is given: ours, plus `--foreground`.
+/// The command line the detached child is given (without the program name).
 ///
-/// `args` is everything after the program name.
-pub fn child_args(args: &[String]) -> Vec<String> {
-    let mut out = args.to_vec();
-    if !out.iter().any(|a| a == "--foreground") {
-        out.push("--foreground".to_string());
+/// Rebuilt from what was parsed rather than edited from the raw argv, so there is no
+/// spelling of a password (`--password X`, `--password=X`, `vnc://u:X@h`, percent-encoded
+/// or not) that could slip through: the target is written back as `vnc://host:port`, the
+/// username as `--username`, and a password is simply not among the fields written.
+pub fn child_args(args: &ConnectArgs, target: &Target, creds: &Credentials) -> Vec<String> {
+    let mut out = vec!["connect".to_string(), format!("vnc://{target}")];
+    if let Some(username) = &creds.username {
+        out.push("--username".to_string());
+        out.push(username.clone());
     }
+    if let Some(file) = &args.password_file {
+        out.push("--password-file".to_string());
+        out.push(file.display().to_string());
+    }
+    out.push("--listen".to_string());
+    out.push(args.listen.to_string());
+    if let Some(token) = &args.token {
+        out.push("--token".to_string());
+        out.push(token.clone());
+    }
+    out.push("--foreground".to_string());
     out
+}
+
+/// The environment the detached child is given on top of ours: the command-line
+/// password, if there was one, as `BOLIDE_PASSWORD`.
+pub fn child_env(password: Option<&Password>) -> Vec<(String, String)> {
+    password
+        .map(|p| vec![(PASSWORD_ENV.to_string(), p.expose().to_string())])
+        .unwrap_or_default()
 }
 
 /// Start `exe args…` in its own session, with stdio pointed at `log`.
@@ -57,7 +86,12 @@ pub fn child_args(args: &[String]) -> Vec<String> {
 /// from under an agent that is using it.
 ///
 /// **Not unit-tested** — see the module docs.
-pub fn spawn_detached(exe: &Path, args: &[String], log: &Path) -> io::Result<Child> {
+pub fn spawn_detached(
+    exe: &Path,
+    args: &[String],
+    env: &[(String, String)],
+    log: &Path,
+) -> io::Result<Child> {
     if let Some(dir) = log.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -70,6 +104,7 @@ pub fn spawn_detached(exe: &Path, args: &[String], log: &Path) -> io::Result<Chi
     let mut command = Command::new(exe);
     command
         .args(args)
+        .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .stdin(Stdio::null())
         .stdout(Stdio::from(out))
         .stderr(Stdio::from(err));

@@ -44,6 +44,25 @@ fn a_png_does_not_go_down_a_tty() {
     let err = run::screenshot_sink(None, true).unwrap_err();
     assert_eq!(err.code, EXIT_USAGE);
     assert!(err.message.contains("--out"), "no way out: {}", err.message);
+    assert!(
+        err.message.contains("--out -"),
+        "no way to say you meant it: {}",
+        err.message
+    );
+}
+
+#[test]
+fn out_dash_sends_the_png_to_stdout_even_on_a_tty() {
+    // The default protects a terminal from a megabyte of binary; asking for it by name
+    // gets it.
+    assert_eq!(
+        run::screenshot_sink(Some(Path::new("-")), true).unwrap(),
+        Sink::Stdout
+    );
+    assert_eq!(
+        run::screenshot_sink(Some(Path::new("-")), false).unwrap(),
+        Sink::Stdout
+    );
 }
 
 #[test]
@@ -60,40 +79,52 @@ fn a_png_goes_to_a_pipe_or_to_the_file_you_named() {
 }
 
 #[test]
-fn a_password_comes_from_the_file_or_the_environment_and_nowhere_else() {
+fn a_password_comes_from_the_flag_the_file_or_the_environment() {
     let dir = TempDir::new("password");
     let file = dir.path().join("pw");
     std::fs::write(&file, "hunter2\n").unwrap();
 
     assert_eq!(
-        run::resolve_password(Some(&file), None).unwrap().as_deref(),
+        run::resolve_password(None, Some(&file), None)
+            .unwrap()
+            .as_deref(),
         Some("hunter2"),
         "a trailing newline is the editor's, not the password's"
     );
     assert_eq!(
-        run::resolve_password(None, Some("from-env".into()))
+        run::resolve_password(None, None, Some("from-env".into()))
             .unwrap()
             .as_deref(),
         Some("from-env")
     );
     assert_eq!(
-        run::resolve_password(Some(&file), Some("from-env".into()))
+        run::resolve_password(None, Some(&file), Some("from-env".into()))
             .unwrap()
             .as_deref(),
         Some("hunter2"),
         "an explicit --password-file wins over an inherited variable"
     );
-    assert_eq!(run::resolve_password(None, None).unwrap(), None);
+    assert_eq!(run::resolve_password(None, None, None).unwrap(), None);
     assert_eq!(
-        run::resolve_password(None, Some(String::new())).unwrap(),
+        run::resolve_password(None, None, Some(String::new())).unwrap(),
         None,
         "an empty BOLIDE_PASSWORD is unset, not an empty password"
     );
 }
 
 #[test]
+fn an_explicit_password_flag_wins_over_an_inherited_variable() {
+    assert_eq!(
+        run::resolve_password(Some("from-flag"), None, Some("from-env".into()))
+            .unwrap()
+            .as_deref(),
+        Some("from-flag")
+    );
+}
+
+#[test]
 fn a_missing_password_file_says_so_without_guessing() {
-    let err = run::resolve_password(Some(Path::new("/nope/nothing-here")), None).unwrap_err();
+    let err = run::resolve_password(None, Some(Path::new("/nope/nothing-here")), None).unwrap_err();
     assert_eq!(err.code, EXIT_FAILURE);
     assert!(
         err.message.contains("/nope/nothing-here"),
