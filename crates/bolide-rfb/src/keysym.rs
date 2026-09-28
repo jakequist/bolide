@@ -17,10 +17,14 @@
 //! `pagedown`, `ctrl`, `control`, `alt`, `option`, `cmd`, `command`, `win`, `windows`,
 //! `super`, `meta`, `shift`, `spacebar`. A bare modifier name means the **left** one.
 //!
-//! `cmd` deserves its own line, because the Mac is why bolide exists: it resolves to
-//! `Meta_L` (0xffe7), which is what a Mac VNC server maps to Command. `cmd+space`
-//! therefore opens Spotlight on the far end, and that is the acceptance a Mac user
-//! will try first.
+//! `cmd` deserves its own line, because the Mac is why bolide exists: `cmd`, `command`
+//! and `⌘` resolve to `Super_L` (0xffeb), the same key as `win`. Apple's Screen
+//! Sharing maps Super_L to Command and **ignores `Meta_L`** (0xffe7), so a `cmd+c` sent
+//! as Meta_L arrives as a bare `c`. TigerVNC's and noVNC's viewers send Super_L for the
+//! Command key too. `cmd+space` therefore opens Spotlight on the far end, and that is
+//! the acceptance a Mac user will try first. `meta` stays X11's `Meta_L`, for the
+//! server that wants that key by name. The other Mac glyphs are aliases as well:
+//! `⌥` is `Alt_L`, `⇧` is `Shift_L` and `⌃` is `Control_L`.
 //!
 //! A single printable character is its own code point when it is Latin-1, and
 //! `0x01000000 + codepoint` above that (the Unicode keysym range).
@@ -46,7 +50,7 @@ use std::fmt;
 /// The one table. Both directions are derived from it — [`keysym_for`] reads it
 /// forwards, [`name_for_keysym`] reads it backwards, and `ALIASES` can only point at a
 /// name that appears in it (there is a test that says so). A second table would be a
-/// second chance to be wrong about `Meta_L`.
+/// second chance to be wrong about which keysym is Command.
 const CANONICAL: &[(&str, u32)] = &[
     ("BackSpace", 0xff08),
     ("Tab", 0xff09),
@@ -122,10 +126,14 @@ const ALIASES: &[(&str, &str)] = &[
     ("alt", "Alt_L"),
     ("option", "Alt_L"),
     ("opt", "Alt_L"),
-    // The Mac is why bolide exists: a Mac VNC server maps Meta to Command, so
-    // `cmd+space` has to become Meta_L or Spotlight never opens.
-    ("cmd", "Meta_L"),
-    ("command", "Meta_L"),
+    // The Mac is why bolide exists: Apple's Screen Sharing maps Super_L to Command and
+    // ignores Meta_L, so `cmd+space` has to become Super_L or Spotlight never opens.
+    ("cmd", "Super_L"),
+    ("command", "Super_L"),
+    ("\u{2318}", "Super_L"),
+    ("\u{2325}", "Alt_L"),
+    ("\u{21e7}", "Shift_L"),
+    ("\u{2303}", "Control_L"),
     ("meta", "Meta_L"),
     ("win", "Super_L"),
     ("windows", "Super_L"),
@@ -165,20 +173,26 @@ pub fn keysym_for(name: &str) -> Option<u32> {
     if let Some(k) = canonical_keysym(name) {
         return Some(k);
     }
+    // Aliases before the single-character rule, because `⌘` is one character and means
+    // Command, not the Unicode keysym for the glyph.
+    let lower = name.to_ascii_lowercase();
+    if let Some(k) = ALIASES
+        .iter()
+        .find(|(a, _)| *a == lower)
+        .and_then(|(_, canon)| canonical_keysym(canon))
+    {
+        return Some(k);
+    }
     // A single character is itself — `a`, `+`, `é`, `漢`.
     let mut chars = name.chars();
     let first = chars.next()?;
     if chars.next().is_none() {
         return Some(keysym_for_char(first));
     }
-    if let Some((_, k)) = CANONICAL.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)) {
-        return Some(*k);
-    }
-    let lower = name.to_ascii_lowercase();
-    ALIASES
+    CANONICAL
         .iter()
-        .find(|(a, _)| *a == lower)
-        .and_then(|(_, canon)| canonical_keysym(canon))
+        .find(|(n, _)| n.eq_ignore_ascii_case(name))
+        .map(|(_, k)| *k)
 }
 
 /// The keysym for one character, as `type` needs it.
@@ -328,11 +342,36 @@ mod tests {
     }
 
     /// The Mac is why bolide exists, and this is the first thing a Mac user types.
+    ///
+    /// Apple's Screen Sharing maps `Super_L` to Command and ignores `Meta_L`: a `cmd+c`
+    /// sent as Meta_L arrives as a bare `c`. TigerVNC's and noVNC's viewers send Super_L
+    /// for the Command key, which is why servers agree on it.
     #[test]
-    fn cmd_is_meta_l_so_cmd_space_opens_spotlight() {
-        assert_eq!(keysym_for("cmd"), Some(0xffe7));
-        assert_eq!(keysym_for("command"), Some(0xffe7));
-        assert_eq!(parse_chord("cmd+space").unwrap(), vec![0xffe7, 0x20]);
+    fn cmd_is_super_l_so_cmd_space_opens_spotlight() {
+        for spelling in ["cmd", "command", "CMD", "Command", "\u{2318}"] {
+            assert_eq!(keysym_for(spelling), Some(0xffeb), "{spelling}");
+        }
+        assert_eq!(
+            keysym_for("cmd"),
+            keysym_for("win"),
+            "cmd and win are one key"
+        );
+        assert_eq!(parse_chord("cmd+space").unwrap(), vec![0xffeb, 0x20]);
+        assert_eq!(parse_chord("cmd+c").unwrap(), vec![0xffeb, 0x63]);
+        assert_eq!(
+            parse_chord("\u{2318}+shift+g").unwrap(),
+            vec![0xffeb, 0xffe1, 0x67]
+        );
+        // `meta` is X11's own name and keeps its own keysym.
+        assert_eq!(keysym_for("meta"), Some(0xffe7));
+    }
+
+    /// The Mac's modifier glyphs, as menus print them and models copy them.
+    #[test]
+    fn the_mac_modifier_glyphs_are_their_keys() {
+        assert_eq!(keysym_for("\u{2325}"), Some(0xffe9), "option");
+        assert_eq!(keysym_for("\u{21e7}"), Some(0xffe1), "shift");
+        assert_eq!(keysym_for("\u{2303}"), Some(0xffe3), "control");
     }
 
     #[test]

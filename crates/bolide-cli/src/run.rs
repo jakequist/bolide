@@ -63,6 +63,7 @@ pub async fn run(cli: Cli) -> Result<(), CliError> {
         Command::Disconnect => disconnect(),
         Command::Screenshot { out } => screenshot(out.as_deref()).await,
         Command::Click { x, y, button } => act(api::action_for_click(x, y, button.as_str())).await,
+        Command::Drag { x1, y1, x2, y2 } => act(api::action_for_drag(x1, y1, x2, y2)).await,
         Command::Move { x, y } => act(api::action_for_move(x, y)).await,
         Command::Type { text } => act(api::action_for_type(&text)).await,
         Command::Key { chord } => act(api::action_for_key(&chord)).await,
@@ -401,6 +402,8 @@ async fn serve_foreground(
             bind: args.listen,
             token: args.token.clone(),
             remote: remote.clone(),
+            drag: args.drag_pacing(),
+            input_settle: args.input_settle(),
             ..Default::default()
         },
     )

@@ -18,7 +18,7 @@ use bolide_server::wire::{
     ClipboardResponse, ComputerAction, ComputerResponse, ErrorCode, ErrorResponse, ScrollDirection,
     StatusResponse,
 };
-use bolide_server::{Running, ServerConfig};
+use bolide_server::{Clock, Running, ServerConfig};
 use tokio::sync::broadcast;
 
 // ---------------------------------------------------------------- the fake session
@@ -236,6 +236,7 @@ impl Harness {
             ServerConfig {
                 remote: "fake01.local:5900".into(),
                 frame_timeout: Duration::from_millis(50),
+                clock: VirtualClock::new(),
                 ..Default::default()
             },
         )
@@ -521,6 +522,140 @@ async fn a_screenshot_after_input_waits_longer_for_the_update_that_follows_it() 
     let short = Duration::from_millis(250);
     let long = Duration::from_secs(2);
     assert_eq!(waits(), vec![short, long, short, long]);
+    h.shutdown().await;
+}
+
+/// A clock that never waits: it records what it was asked for and moves its own time
+/// forward by that much, so "has the desktop had long enough" is a value, not a race.
+#[derive(Debug)]
+struct VirtualClock {
+    start: std::time::Instant,
+    slept: Mutex<Vec<Duration>>,
+}
+
+impl VirtualClock {
+    fn new() -> Arc<VirtualClock> {
+        Arc::new(VirtualClock {
+            start: std::time::Instant::now(),
+            slept: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn slept(&self) -> Vec<Duration> {
+        self.slept.lock().unwrap().clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl Clock for VirtualClock {
+    async fn sleep(&self, duration: Duration) {
+        self.slept.lock().unwrap().push(duration);
+    }
+
+    fn now(&self) -> std::time::Instant {
+        self.start + self.slept.lock().unwrap().iter().sum::<Duration>()
+    }
+}
+
+/// Apple's Screen Sharing streams small updates many times a second, so "the next
+/// update after the request" can arrive before the app has redrawn: Spotlight takes
+/// about 300 ms to paint after `cmd+space`. A screenshot that follows input therefore
+/// lets `input_settle` pass since the input first — only what is left of it, and not at
+/// all when the caller already waited.
+#[tokio::test]
+async fn a_screenshot_right_after_input_lets_the_desktop_settle_first() {
+    let clock = VirtualClock::new();
+    let h = Harness::start(
+        Fake::new(32, 16),
+        ServerConfig {
+            clock: clock.clone(),
+            ..Default::default()
+        },
+    )
+    .await;
+    let settle = ServerConfig::default().input_settle;
+    assert_eq!(settle, Duration::from_millis(500));
+
+    expect_ok(h.action(&ComputerAction::Screenshot).await).await;
+    assert_eq!(clock.slept(), vec![], "no input, no settling");
+
+    expect_ok(
+        h.action(&ComputerAction::LeftClick { coordinate: [3, 4] })
+            .await,
+    )
+    .await;
+    expect_ok(h.action(&ComputerAction::Screenshot).await).await;
+    assert_eq!(clock.slept(), vec![settle], "settled after the click");
+    let refreshes = h
+        .session
+        .calls()
+        .into_iter()
+        .filter(|c| matches!(c, Call::Refresh { .. }))
+        .count();
+    assert_eq!(refreshes, 2, "and then asked the desktop for a frame");
+
+    let _ = h.get("/screenshot").await;
+    assert_eq!(
+        clock.slept(),
+        vec![settle],
+        "nothing new since, nothing to wait for"
+    );
+
+    // A caller that already waited long enough is not made to wait again.
+    expect_ok(
+        h.action(&ComputerAction::Key {
+            text: "Return".into(),
+        })
+        .await,
+    )
+    .await;
+    expect_ok(h.action(&ComputerAction::Wait { duration: 1.0 }).await).await;
+    let _ = h.get("/screenshot").await;
+    assert_eq!(clock.slept(), vec![settle, Duration::from_secs(1)]);
+
+    // Part of the way there: only the rest.
+    expect_ok(
+        h.action(&ComputerAction::Key {
+            text: "Return".into(),
+        })
+        .await,
+    )
+    .await;
+    expect_ok(h.action(&ComputerAction::Wait { duration: 0.2 }).await).await;
+    let _ = h.get("/screenshot").await;
+    assert_eq!(
+        clock.slept(),
+        vec![
+            settle,
+            Duration::from_secs(1),
+            Duration::from_millis(200),
+            Duration::from_millis(300),
+        ]
+    );
+    h.shutdown().await;
+}
+
+/// Zero is a choice the caller may make: the screenshot then goes straight to the
+/// desktop, as it did before settling existed.
+#[tokio::test]
+async fn an_input_settle_of_zero_waits_for_nothing() {
+    let clock = VirtualClock::new();
+    let h = Harness::start(
+        Fake::new(32, 16),
+        ServerConfig {
+            clock: clock.clone(),
+            input_settle: Duration::ZERO,
+            ..Default::default()
+        },
+    )
+    .await;
+    expect_ok(
+        h.action(&ComputerAction::LeftClick { coordinate: [3, 4] })
+            .await,
+    )
+    .await;
+    expect_ok(h.action(&ComputerAction::Screenshot).await).await;
+    assert_eq!(clock.slept(), vec![]);
     h.shutdown().await;
 }
 

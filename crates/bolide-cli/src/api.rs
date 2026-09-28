@@ -50,6 +50,14 @@ pub fn action_for_click(x: i32, y: i32, button: &str) -> ComputerAction {
         .click_at(x, y)
 }
 
+/// What `bolide drag X1 Y1 X2 Y2` becomes.
+pub fn action_for_drag(x1: i32, y1: i32, x2: i32, y2: i32) -> ComputerAction {
+    ComputerAction::LeftClickDrag {
+        start_coordinate: [x1, y1],
+        coordinate: [x2, y2],
+    }
+}
+
 /// What `bolide move X Y` becomes.
 pub fn action_for_move(x: i32, y: i32) -> ComputerAction {
     ComputerAction::MouseMove { coordinate: [x, y] }

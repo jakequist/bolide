@@ -17,8 +17,10 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use bolide_server::wire::{ComputerAction, ScrollDirection};
+use bolide_server::DragPacing;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use crate::error::CliError;
@@ -62,6 +64,17 @@ pub enum Command {
         /// Which button.
         #[arg(long, value_enum, default_value_t = Button::Left)]
         button: Button,
+    },
+    /// Drag with the left button from one point to another, paced as `connect` set it.
+    Drag {
+        /// Start X, in framebuffer pixels.
+        x1: i32,
+        /// Start Y, in framebuffer pixels.
+        y1: i32,
+        /// End X, in framebuffer pixels.
+        x2: i32,
+        /// End Y, in framebuffer pixels.
+        y2: i32,
     },
     /// Move the pointer.
     Move {
@@ -139,9 +152,48 @@ pub struct ConnectArgs {
     /// Require `Authorization: Bearer T` on every route but `/healthz`.
     #[arg(long, value_name = "T")]
     pub token: Option<String>,
+    /// Held pointer moves a drag takes from its start to its end [default: 20].
+    ///
+    /// Finder ignores a drag that jumps straight to its end. `--drag-steps 1
+    /// --drag-step-ms 0 --drag-dwell-ms 0` is the bare press, move, release.
+    #[arg(long, value_name = "N")]
+    pub drag_steps: Option<u16>,
+    /// Milliseconds between a drag's moves [default: 20].
+    #[arg(long, value_name = "MS")]
+    pub drag_step_ms: Option<u64>,
+    /// Milliseconds a drag holds still after the press and before the release
+    /// [default: 150].
+    #[arg(long, value_name = "MS")]
+    pub drag_dwell_ms: Option<u64>,
+    /// Milliseconds a screenshot lets pass after the last click or key before asking
+    /// the desktop for a frame, so the app has redrawn [default: 500]. Only what is left
+    /// of it is waited; 0 turns it off.
+    #[arg(long, value_name = "MS")]
+    pub settle_ms: Option<u64>,
     /// Stay attached instead of daemonising.
     #[arg(long)]
     pub foreground: bool,
+}
+
+impl ConnectArgs {
+    /// The drag pacing these flags ask for: the server's default, with each flag
+    /// replacing the one field it names.
+    pub fn drag_pacing(&self) -> DragPacing {
+        let default = DragPacing::DEFAULT;
+        DragPacing {
+            steps: self.drag_steps.unwrap_or(default.steps),
+            step_ms: self.drag_step_ms.unwrap_or(default.step_ms),
+            dwell_ms: self.drag_dwell_ms.unwrap_or(default.dwell_ms),
+        }
+    }
+
+    /// How long a screenshot after input lets the desktop settle: the server's default
+    /// unless `--settle-ms` says otherwise.
+    pub fn input_settle(&self) -> Duration {
+        self.settle_ms
+            .map(Duration::from_millis)
+            .unwrap_or_else(|| bolide_server::ServerConfig::default().input_settle)
+    }
 }
 
 /// `bolide clipboard`'s two halves.

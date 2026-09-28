@@ -61,6 +61,17 @@ fn move_type_and_key_map_straight_through() {
 }
 
 #[test]
+fn drag_is_left_click_drag_from_the_first_point_to_the_second() {
+    assert_eq!(
+        api::action_for_drag(10, 20, 300, 400),
+        ComputerAction::LeftClickDrag {
+            start_coordinate: [10, 20],
+            coordinate: [300, 400],
+        }
+    );
+}
+
+#[test]
 fn scroll_carries_the_coordinate_the_direction_and_the_amount() {
     assert_eq!(
         api::action_for_scroll(5, 6, Dir::Down, 3),

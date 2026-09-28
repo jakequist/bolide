@@ -7,6 +7,7 @@ use bolide_cli::cli::{
     ConnectArgs, Dir, Target,
 };
 use bolide_cli::error::{Stream, EXIT_USAGE};
+use bolide_server::DragPacing;
 
 fn args(line: &[&str]) -> Vec<String> {
     std::iter::once("bolide")
@@ -34,6 +35,78 @@ fn a_password_on_the_command_line_is_accepted_by_connect() {
             other => panic!("wrong command: {other:?}"),
         }
     }
+}
+
+fn connect_args(line: &[&str]) -> ConnectArgs {
+    match parse_args(&args(line))
+        .expect("a valid command line")
+        .command
+    {
+        Command::Connect(c) => c,
+        other => panic!("wrong command: {other:?}"),
+    }
+}
+
+/// Drag pacing is the server's default until a flag says otherwise, and each flag
+/// overrides only the one thing it names.
+#[test]
+fn drag_pacing_flags_override_only_what_they_name() {
+    assert_eq!(
+        connect_args(&["connect", "vnc://h"]).drag_pacing(),
+        DragPacing::DEFAULT
+    );
+    assert_eq!(
+        connect_args(&["connect", "vnc://h", "--drag-steps", "60"]).drag_pacing(),
+        DragPacing {
+            steps: 60,
+            ..DragPacing::DEFAULT
+        }
+    );
+    assert_eq!(
+        connect_args(&[
+            "connect",
+            "vnc://h",
+            "--drag-steps",
+            "1",
+            "--drag-step-ms",
+            "0",
+            "--drag-dwell-ms",
+            "0",
+        ])
+        .drag_pacing(),
+        DragPacing {
+            steps: 1,
+            step_ms: 0,
+            dwell_ms: 0,
+        },
+        "the bare four-event drag is one flag set away"
+    );
+}
+
+#[test]
+fn settle_ms_overrides_the_wait_before_a_screenshot_that_follows_input() {
+    assert_eq!(
+        connect_args(&["connect", "vnc://h"]).input_settle(),
+        bolide_server::ServerConfig::default().input_settle
+    );
+    assert_eq!(
+        connect_args(&["connect", "vnc://h", "--settle-ms", "0"]).input_settle(),
+        std::time::Duration::ZERO
+    );
+    assert_eq!(
+        connect_args(&["connect", "vnc://h", "--settle-ms", "1500"]).input_settle(),
+        std::time::Duration::from_millis(1500)
+    );
+}
+
+#[test]
+fn drag_takes_two_points() {
+    let cli = parse_args(&args(&["drag", "10", "20", "300", "400"])).expect("a drag");
+    match cli.command {
+        Command::Drag { x1, y1, x2, y2 } => assert_eq!((x1, y1, x2, y2), (10, 20, 300, 400)),
+        other => panic!("wrong command: {other:?}"),
+    }
+    assert!(parse_args(&args(&["drag", "10", "20", "300"])).is_err());
 }
 
 #[test]

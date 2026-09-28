@@ -19,13 +19,13 @@
 //! exists to unblock is behind VNC authentication, so "connects with a password" is a
 //! claim v0 has to make.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use base64::Engine as _;
 use bolide_rfb::{Config, Session, SessionHandle};
 use bolide_server::wire::{ClipboardResponse, ComputerAction, ComputerResponse, StatusResponse};
-use bolide_server::{Running, ServerConfig};
+use bolide_server::{Clock, DragPacing, Running, ServerConfig};
 use bolide_testkit::{ClientEvent, Encoding, FakeServer, Screen};
 
 /// Long enough that a loaded CI box does not fail the test, short enough that a genuine
@@ -56,6 +56,12 @@ struct Stack {
 
 impl Stack {
     async fn up(password: Option<&str>, encoding: Encoding) -> Stack {
+        Stack::up_with(password, encoding, ServerConfig::default()).await
+    }
+
+    /// The stack with the server's own settings — drag pacing, the clock — chosen by
+    /// the test. `remote` and `frame_timeout` are the stack's.
+    async fn up_with(password: Option<&str>, encoding: Encoding, server: ServerConfig) -> Stack {
         let mut builder = FakeServer::builder()
             .screen(scripted_screen())
             .desktop_name("acceptance")
@@ -79,7 +85,7 @@ impl Stack {
             ServerConfig {
                 remote: fake.addr().to_string(),
                 frame_timeout: PATIENCE,
-                ..Default::default()
+                ..server
             },
         )
         .await
@@ -390,6 +396,165 @@ async fn a_screenshot_decodes_when_the_desktop_speaks_zrle() {
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+
+    stack.down().await;
+}
+
+/// Every pointer event the desktop saw, in order.
+async fn pointers(stack: &Stack) -> Vec<(u16, u16, u8)> {
+    stack
+        .fake
+        .events()
+        .await
+        .into_iter()
+        .filter_map(|e| match e {
+            ClientEvent::Pointer { x, y, buttons } => Some((x, y, buttons)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Apple's Screen Sharing takes `Super_L` as Command and drops `Meta_L`, so a `cmd+c`
+/// that left bolide as Meta_L reached a Mac as a bare `c`. Checked at the far end of the
+/// wire, where the Mac would see it.
+#[tokio::test]
+async fn a_cmd_chord_reaches_the_desktop_as_super_l_around_the_key() {
+    const SUPER_L: u32 = 0xffeb;
+    let c = u32::from(b'c');
+
+    for chord in ["cmd+c", "command+c", "\u{2318}+c"] {
+        let stack = Stack::up(None, Encoding::Negotiated).await;
+        stack
+            .action(ComputerAction::Key {
+                text: chord.to_string(),
+            })
+            .await;
+        // Command's release is the chord's last event, so once it is here all four are.
+        stack
+            .saw("Command released", |e| {
+                matches!(
+                    e,
+                    ClientEvent::Key {
+                        keysym: SUPER_L,
+                        down: false
+                    }
+                )
+            })
+            .await;
+        let keys: Vec<(u32, bool)> = stack
+            .fake
+            .events()
+            .await
+            .into_iter()
+            .filter_map(|e| match e {
+                ClientEvent::Key { keysym, down } => Some((keysym, down)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            keys,
+            vec![(SUPER_L, true), (c, true), (c, false), (SUPER_L, false)],
+            "{chord} is Command down, c down and up, Command up"
+        );
+        stack.down().await;
+    }
+}
+
+/// A clock that never waits and remembers what it was asked to wait for: the seam that
+/// lets a test see a drag's pacing without spending it. Its time moves only by what it
+/// was asked to sleep.
+#[derive(Debug)]
+struct VirtualClock {
+    start: std::time::Instant,
+    slept: Mutex<Vec<Duration>>,
+}
+
+impl Default for VirtualClock {
+    fn default() -> VirtualClock {
+        VirtualClock {
+            start: std::time::Instant::now(),
+            slept: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Clock for VirtualClock {
+    async fn sleep(&self, duration: Duration) {
+        self.slept.lock().expect("unpoisoned").push(duration);
+    }
+
+    fn now(&self) -> std::time::Instant {
+        self.start
+            + self
+                .slept
+                .lock()
+                .expect("unpoisoned")
+                .iter()
+                .sum::<Duration>()
+    }
+}
+
+/// Finder ignores a drag that teleports. The desktop must see the press, a walk of held
+/// moves to the target and the release there, and the clock must have been asked to
+/// pause after the press, between the moves and before the release.
+#[tokio::test]
+async fn a_drag_reaches_the_desktop_as_a_paced_walk_with_the_button_held() {
+    let clock = Arc::new(VirtualClock::default());
+    let stack = Stack::up_with(
+        None,
+        Encoding::Negotiated,
+        ServerConfig {
+            drag: DragPacing {
+                steps: 4,
+                step_ms: 15,
+                dwell_ms: 90,
+            },
+            clock: clock.clone(),
+            ..Default::default()
+        },
+    )
+    .await;
+
+    stack
+        .action(ComputerAction::LeftClickDrag {
+            start_coordinate: [10, 20],
+            coordinate: [50, 60],
+        })
+        .await;
+    stack
+        .saw("the release at the end", |e| {
+            matches!(
+                e,
+                ClientEvent::Pointer {
+                    x: 50,
+                    y: 60,
+                    buttons: 0
+                }
+            )
+        })
+        .await;
+
+    const L: u8 = bolide_rfb::proto::BUTTON_LEFT;
+    assert_eq!(
+        pointers(&stack).await,
+        vec![
+            (10, 20, 0),
+            (10, 20, L),
+            (20, 30, L),
+            (30, 40, L),
+            (40, 50, L),
+            (50, 60, L),
+            (50, 60, 0),
+        ],
+        "press at the start, four held steps, release at the end"
+    );
+    let ms = Duration::from_millis;
+    assert_eq!(
+        *clock.slept.lock().expect("unpoisoned"),
+        vec![ms(90), ms(15), ms(15), ms(15), ms(90)],
+        "a dwell after the press, a step between moves, a dwell before the release"
+    );
 
     stack.down().await;
 }

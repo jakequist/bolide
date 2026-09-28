@@ -10,9 +10,11 @@
 //! - **`double_click` / `triple_click`** are one move followed by two/three
 //!   press+release pairs — not two/three independent clicks, because re-sending the
 //!   move between them is harmless but re-deriving the position is not.
-//! - **`left_click_drag`** is `move(start) → press(start) → move(end) → release(end)`.
+//! - **`left_click_drag`** is `move(start) → press(start) → dwell → held moves along
+//!   the line to end, a step apart → dwell → release(end)`, paced by [`DragPacing`].
 //!   The release must carry the *end* coordinate; releasing at the start cancels the
-//!   drag on most toolkits.
+//!   drag on most toolkits. The walk and the waits are there because Finder ignores a
+//!   drag that jumps straight to its end.
 //! - **`scroll`** is a move to the coordinate, then `amount` × (press wheel-button,
 //!   release wheel-button) — `bolide_rfb::proto::BUTTON_WHEEL_UP` / `_DOWN`. The leading
 //!   move is load-bearing for the same reason a click's is: a wheel notch scrolls what
@@ -41,6 +43,8 @@ use bolide_rfb::keysym::UnknownKey;
 use bolide_rfb::proto::{
     BUTTON_LEFT, BUTTON_MIDDLE, BUTTON_RIGHT, BUTTON_WHEEL_DOWN, BUTTON_WHEEL_UP,
 };
+use std::time::Duration;
+
 use bolide_rfb::Session;
 
 use crate::wire::{ComputerAction, ScrollDirection};
@@ -71,6 +75,42 @@ pub enum RfbOp {
     },
 }
 
+/// How `left_click_drag` moves: like a hand, not a teleport.
+///
+/// macOS Finder (and other toolkits that start a drag session only after watching the
+/// pointer move with the button down) ignores a press followed by one jump to the end
+/// and a release. A drag is therefore planned as: press at the start, wait `dwell_ms`,
+/// `steps` held moves along the straight line to the end, `step_ms` apart, wait
+/// `dwell_ms` over the target, release. A wait of zero plans no `Sleep` at all.
+///
+/// `steps: 1` with both waits zero is the bare four-event drag, for a desktop that wants
+/// it; `steps: 0` means the same as `1`, since a drag always reaches its end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DragPacing {
+    /// Held moves from the start to the end, the last of them landing on the end.
+    pub steps: u16,
+    /// Milliseconds between consecutive held moves.
+    pub step_ms: u64,
+    /// Milliseconds held still after the press and again before the release.
+    pub dwell_ms: u64,
+}
+
+impl DragPacing {
+    /// The default: 20 moves 20 ms apart, with 150 ms pauses — about 0.7 s a drag,
+    /// slow enough for Finder and brisk enough not to be noticed.
+    pub const DEFAULT: DragPacing = DragPacing {
+        steps: 20,
+        step_ms: 20,
+        dwell_ms: 150,
+    };
+}
+
+impl Default for DragPacing {
+    fn default() -> DragPacing {
+        DragPacing::DEFAULT
+    }
+}
+
 /// What [`plan`] needs to know about the session.
 #[derive(Clone, Copy, Debug)]
 pub struct PlanContext {
@@ -78,6 +118,8 @@ pub struct PlanContext {
     pub width: u16,
     /// Framebuffer height.
     pub height: u16,
+    /// How a drag walks from its start to its end.
+    pub drag: DragPacing,
 }
 
 /// Why an action could not be planned.
@@ -131,6 +173,57 @@ fn clicks_at(x: u16, y: u16, buttons: u8, count: usize) -> Vec<RfbOp> {
     ops
 }
 
+/// A drag from `start` to `end`, paced as [`DragPacing`] describes.
+fn drag(start: (u16, u16), end: (u16, u16), pacing: DragPacing) -> Vec<RfbOp> {
+    let steps = pacing.steps.max(1);
+    let pause = |ops: &mut Vec<RfbOp>, ms: u64| {
+        if ms > 0 {
+            ops.push(RfbOp::Sleep { ms });
+        }
+    };
+    // The i-th of n points on the segment, rounded to the nearest pixel. Integer
+    // arithmetic, so the last point is `end` exactly and no float can drift off it.
+    let along = |from: u16, to: u16, i: i64, n: i64| -> u16 {
+        let (from, to) = (i64::from(from), i64::from(to));
+        let offset = (to - from) * i;
+        let rounded = (2 * offset + offset.signum() * n) / (2 * n);
+        (from + rounded) as u16
+    };
+
+    let mut ops = Vec::with_capacity(4 + 2 * usize::from(steps));
+    ops.push(RfbOp::Pointer {
+        x: start.0,
+        y: start.1,
+        buttons: 0,
+    });
+    ops.push(RfbOp::Pointer {
+        x: start.0,
+        y: start.1,
+        buttons: BUTTON_LEFT,
+    });
+    pause(&mut ops, pacing.dwell_ms);
+    let n = i64::from(steps);
+    for i in 1..=n {
+        if i > 1 {
+            pause(&mut ops, pacing.step_ms);
+        }
+        ops.push(RfbOp::Pointer {
+            x: along(start.0, end.0, i, n),
+            y: along(start.1, end.1, i, n),
+            buttons: BUTTON_LEFT,
+        });
+    }
+    pause(&mut ops, pacing.dwell_ms);
+    // The release carries the end coordinate: releasing anywhere else cancels the drag
+    // on most toolkits.
+    ops.push(RfbOp::Pointer {
+        x: end.0,
+        y: end.1,
+        buttons: 0,
+    });
+    ops
+}
+
 /// One character's keysym, with the control characters a `type` action really carries
 /// routed to their named keys.
 ///
@@ -180,30 +273,9 @@ pub fn plan(
             start_coordinate,
             coordinate,
         } => {
-            let (sx, sy) = ctx.check(*start_coordinate)?;
-            let (ex, ey) = ctx.check(*coordinate)?;
-            vec![
-                RfbOp::Pointer {
-                    x: sx,
-                    y: sy,
-                    buttons: 0,
-                },
-                RfbOp::Pointer {
-                    x: sx,
-                    y: sy,
-                    buttons: BUTTON_LEFT,
-                },
-                RfbOp::Pointer {
-                    x: ex,
-                    y: ey,
-                    buttons: BUTTON_LEFT,
-                },
-                RfbOp::Pointer {
-                    x: ex,
-                    y: ey,
-                    buttons: 0,
-                },
-            ]
+            let start = ctx.check(*start_coordinate)?;
+            let end = ctx.check(*coordinate)?;
+            drag(start, end, ctx.drag)
         }
 
         ComputerAction::MouseMove { coordinate } => {
@@ -283,10 +355,14 @@ pub fn plan(
 /// before a failure, because the pointer really did move — which is what
 /// `cursor_position` reports. RFB has no message that asks a server where the cursor
 /// is, so bolide's own record is the only answer there is.
+///
+/// Every [`RfbOp::Sleep`] is spent on `clock`, which is how a test sees a drag's pacing
+/// without waiting it out.
 pub async fn execute(
     session: &dyn Session,
     ops: &[RfbOp],
     cursor: &mut [i32; 2],
+    clock: &dyn Clock,
 ) -> bolide_rfb::Result<()> {
     for op in ops {
         match *op {
@@ -295,12 +371,39 @@ pub async fn execute(
                 *cursor = [i32::from(x), i32::from(y)];
             }
             RfbOp::Key { keysym, down } => session.key(keysym, down).await?,
-            RfbOp::Sleep { ms } => {
-                tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
-            }
+            RfbOp::Sleep { ms } => clock.sleep(Duration::from_millis(ms)).await,
         }
     }
     Ok(())
+}
+
+/// Where an action's waits are spent.
+///
+/// The seam for time, as `Session` is the seam for the desktop: the server uses
+/// [`TokioClock`], and a test hands in a clock that records what it was asked to wait
+/// for and returns at once.
+#[async_trait::async_trait]
+pub trait Clock: Send + Sync + std::fmt::Debug {
+    /// Wait for `duration`.
+    async fn sleep(&self, duration: Duration);
+
+    /// This clock's time now. A fake's moves only when it is slept on.
+    fn now(&self) -> std::time::Instant;
+}
+
+/// Real time, through `tokio::time`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TokioClock;
+
+#[async_trait::async_trait]
+impl Clock for TokioClock {
+    async fn sleep(&self, duration: Duration) {
+        tokio::time::sleep(duration).await;
+    }
+
+    fn now(&self) -> std::time::Instant {
+        tokio::time::Instant::now().into_std()
+    }
 }
 
 #[cfg(test)]
@@ -314,10 +417,25 @@ mod tests {
     const CTX: PlanContext = PlanContext {
         width: 800,
         height: 600,
+        drag: DragPacing::DEFAULT,
     };
 
     fn ops(action: ComputerAction) -> Vec<RfbOp> {
         plan(&action, CTX).expect("planned")
+    }
+
+    fn drag_with(pacing: DragPacing, from: [i32; 2], to: [i32; 2]) -> Vec<RfbOp> {
+        plan(
+            &ComputerAction::LeftClickDrag {
+                start_coordinate: from,
+                coordinate: to,
+            },
+            PlanContext {
+                drag: pacing,
+                ..CTX
+            },
+        )
+        .expect("planned")
     }
 
     fn pointer(x: u16, y: u16, buttons: u8) -> RfbOp {
@@ -396,14 +514,17 @@ mod tests {
     }
 
     /// Releasing at the *start* cancels the drag on most toolkits; this is the whole
-    /// reason the drag is not two clicks.
+    /// reason the drag is not two clicks. With one step and no waits, the pacing that
+    /// bolide used before drags were paced, it is exactly four PointerEvents.
     #[test]
     fn a_drag_releases_at_the_end_coordinate() {
+        let bare = DragPacing {
+            steps: 1,
+            step_ms: 0,
+            dwell_ms: 0,
+        };
         assert_eq!(
-            ops(ComputerAction::LeftClickDrag {
-                start_coordinate: [10, 20],
-                coordinate: [30, 40],
-            }),
+            drag_with(bare, [10, 20], [30, 40]),
             vec![
                 pointer(10, 20, 0),
                 pointer(10, 20, BUTTON_LEFT),
@@ -411,6 +532,96 @@ mod tests {
                 pointer(30, 40, 0),
             ]
         );
+        assert_eq!(
+            drag_with(DragPacing { steps: 0, ..bare }, [10, 20], [30, 40]),
+            drag_with(bare, [10, 20], [30, 40]),
+            "zero steps still moves to the end once; a drag that never moves is a click"
+        );
+    }
+
+    /// Finder ignores a drag that teleports: it wants the button held for a moment,
+    /// then the pointer walking to the target, then a pause over it before the release.
+    #[test]
+    fn a_drag_presses_dwells_walks_in_steps_and_dwells_before_the_release() {
+        let pacing = DragPacing {
+            steps: 4,
+            step_ms: 10,
+            dwell_ms: 50,
+        };
+        assert_eq!(
+            drag_with(pacing, [10, 20], [50, 60]),
+            vec![
+                pointer(10, 20, 0),
+                pointer(10, 20, BUTTON_LEFT),
+                RfbOp::Sleep { ms: 50 },
+                pointer(20, 30, BUTTON_LEFT),
+                RfbOp::Sleep { ms: 10 },
+                pointer(30, 40, BUTTON_LEFT),
+                RfbOp::Sleep { ms: 10 },
+                pointer(40, 50, BUTTON_LEFT),
+                RfbOp::Sleep { ms: 10 },
+                pointer(50, 60, BUTTON_LEFT),
+                RfbOp::Sleep { ms: 50 },
+                pointer(50, 60, 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_steps_of_a_drag_round_to_the_nearest_pixel_and_end_exactly() {
+        let pacing = DragPacing {
+            steps: 3,
+            step_ms: 0,
+            dwell_ms: 0,
+        };
+        let held: Vec<(u16, u16)> = drag_with(pacing, [0, 0], [10, 5])
+            .into_iter()
+            .filter_map(|op| match op {
+                RfbOp::Pointer { x, y, buttons } if buttons == BUTTON_LEFT => Some((x, y)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(held, vec![(0, 0), (3, 2), (7, 3), (10, 5)]);
+        // Backwards too: the interpolation is not only for drags down and right.
+        let held: Vec<(u16, u16)> = drag_with(pacing, [10, 5], [0, 0])
+            .into_iter()
+            .filter_map(|op| match op {
+                RfbOp::Pointer { x, y, buttons } if buttons == BUTTON_LEFT => Some((x, y)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(held, vec![(10, 5), (7, 3), (3, 2), (0, 0)]);
+    }
+
+    /// The default is a hand, not a teleport: several held moves, spread over time.
+    #[test]
+    fn the_default_drag_walks_with_the_button_held_over_a_fraction_of_a_second() {
+        let planned = ops(ComputerAction::LeftClickDrag {
+            start_coordinate: [0, 0],
+            coordinate: [400, 300],
+        });
+        let held_moves = planned
+            .iter()
+            .filter(|op| matches!(op, RfbOp::Pointer { buttons, .. } if *buttons == BUTTON_LEFT))
+            .count()
+            - 1;
+        assert!(
+            held_moves >= 10,
+            "only {held_moves} moves with the button held"
+        );
+        let waited: u64 = planned
+            .iter()
+            .map(|op| match op {
+                RfbOp::Sleep { ms } => *ms,
+                _ => 0,
+            })
+            .sum();
+        assert!(
+            (300..=2000).contains(&waited),
+            "a default drag takes {waited} ms"
+        );
+        assert_eq!(planned.last(), Some(&pointer(400, 300, 0)));
+        assert_eq!(DragPacing::default(), DragPacing::DEFAULT);
     }
 
     #[test]

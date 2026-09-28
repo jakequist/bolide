@@ -104,6 +104,7 @@ Then `bolide screenshot --out /tmp/s.png` and look at it.
 | `bolide disconnect` | stop the server and close the RFB session |
 | `bolide screenshot [--out FILE]` | the current screen as PNG (`--out -` for stdout, even on a terminal) |
 | `bolide click X Y [--button left\|right\|middle]` | a click |
+| `bolide drag X1 Y1 X2 Y2` | drag with the left button, paced so Finder takes it |
 | `bolide move X Y` | move the pointer |
 | `bolide type TEXT` | type literal text |
 | `bolide key CHORD` | a key or chord — `Return`, `ctrl+c`, `cmd+space`, `Page_Down` |
@@ -114,7 +115,9 @@ Then `bolide screenshot --out /tmp/s.png` and look at it.
 | `bolide --version` | the installed version |
 
 `connect` options: `--username U`, `--password PW`, `--password-file F` (or the
-`BOLIDE_PASSWORD` environment variable), `--listen ADDR`, `--token T`, `--foreground`.
+`BOLIDE_PASSWORD` environment variable), `--listen ADDR`, `--token T`, `--foreground`,
+and the timing knobs `--drag-steps N`, `--drag-step-ms MS`, `--drag-dwell-ms MS` (how a
+drag walks) and `--settle-ms MS` (how long a screenshot after input lets the app redraw).
 Credentials can also ride in the URL: `vnc://jake:pw@mac01.local` (percent-encode an `@`,
 `:` or `%` in them).
 

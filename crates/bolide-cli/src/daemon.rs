@@ -67,6 +67,17 @@ pub fn child_args(args: &ConnectArgs, target: &Target, creds: &Credentials) -> V
         out.push("--token".to_string());
         out.push(token.clone());
     }
+    for (flag, value) in [
+        ("--drag-steps", args.drag_steps.map(u64::from)),
+        ("--drag-step-ms", args.drag_step_ms),
+        ("--drag-dwell-ms", args.drag_dwell_ms),
+        ("--settle-ms", args.settle_ms),
+    ] {
+        if let Some(value) = value {
+            out.push(flag.to_string());
+            out.push(value.to_string());
+        }
+    }
     out.push("--foreground".to_string());
     out
 }

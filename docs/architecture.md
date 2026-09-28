@@ -87,8 +87,16 @@ timing. What a click *becomes* is asserted directly.
 **`plan(action, ctx) -> Vec<RfbOp>` is pure.** The interesting questions about an action
 are questions about a sequence: does a click move before it presses (it must — RFB has
 no "click at (x, y)", so a press carries whatever position preceded it)? does a drag
-release at the end coordinate? does a scroll of zero notches move the pointer at all
-(it must not)? Those are table tests over a function, not integration tests.
+release at the end coordinate, after walking there with the button held? does a scroll
+of zero notches move the pointer at all (it must not)? Those are table tests over a
+function, not integration tests.
+
+**`bolide_server::Clock` is where time is spent.** A drag's pauses, a `wait` and the
+settling before a screenshot that follows input all go through the `clock` in
+`ServerConfig`. The server uses real time, and a test hands in a clock that records what
+it was asked to wait for, moves its own time by that much and returns at once. So "the
+drag paused 150 ms after the press" and "the screenshot let the click settle" are
+assertions on a list, and no test sleeps.
 
 **`bolide-testkit` is a real server.** Once the pure parts are covered, what is left is
 whether bolide and a genuine RFB peer agree. The fake speaks the protocol over a real

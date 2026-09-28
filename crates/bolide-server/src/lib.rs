@@ -40,12 +40,22 @@ mod actions;
 mod http;
 mod image;
 
-pub use actions::{execute, plan, ActionError, PlanContext, RfbOp};
+pub use actions::{execute, plan, ActionError, Clock, DragPacing, PlanContext, RfbOp, TokioClock};
 pub use image::encode_png;
 
 /// How to run the server.
 #[derive(Clone, Debug)]
 pub struct ServerConfig {
+    /// How `left_click_drag` walks from its start to its end. Default
+    /// [`DragPacing::DEFAULT`].
+    pub drag: DragPacing,
+    /// Where an action's waits are spent. Default [`TokioClock`]; a test hands in one
+    /// that records them instead.
+    pub clock: Arc<dyn Clock>,
+    /// How long after the last pointer or key event a screenshot waits before asking
+    /// the desktop for a frame, so the app has redrawn. Default 500 ms; only what is
+    /// left of it is waited, and zero turns it off.
+    pub input_settle: Duration,
     /// Where to listen. Default `127.0.0.1:0`.
     pub bind: SocketAddr,
     /// Optional bearer token. When `Some`, every route but `/healthz` requires
@@ -65,6 +75,9 @@ impl Default for ServerConfig {
             token: None,
             remote: String::new(),
             frame_timeout: Duration::from_secs(5),
+            drag: DragPacing::DEFAULT,
+            clock: Arc::new(TokioClock),
+            input_settle: Duration::from_millis(500),
         }
     }
 }

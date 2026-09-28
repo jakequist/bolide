@@ -17,7 +17,8 @@
 //! - **Screenshots are fresh.** Before encoding, if the session is unpainted, ask for a
 //!   non-incremental update and wait up to `frame_timeout`; otherwise a short
 //!   incremental refresh is enough — unless a pointer or key event went out since the
-//!   last screenshot, when it waits up to `AFTER_INPUT_WAIT` for the update that
+//!   last screenshot, when it first lets `input_settle` pass since that input (on the
+//!   configured clock) and then waits up to `AFTER_INPUT_WAIT` for the update that
 //!   follows it. An unpainted framebuffer is a *black screen at
 //!   exactly screen dimensions* — indistinguishable from a real black screen, and a
 //!   model shown one reports the app as blank. A timeout on an already-painted frame
@@ -39,9 +40,8 @@
 //! a recording fake `Session`.
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
 use axum::extract::{RawQuery, State};
@@ -102,9 +102,10 @@ struct AppState {
     /// record is the only answer `cursor_position` can give, and a record updated
     /// outside the lock would be a third caller's position.
     hands: tokio::sync::Mutex<[i32; 2]>,
-    /// Whether a pointer or key event has gone to the desktop since the last screenshot.
-    /// The next screenshot waits [`AFTER_INPUT_WAIT`] for the update that shows it.
-    touched: AtomicBool,
+    /// When the last pointer or key event went to the desktop, if one has since the last
+    /// screenshot, on `config.clock`. The next screenshot lets `config.input_settle` pass
+    /// since then and waits [`AFTER_INPUT_WAIT`] for the update that shows it.
+    last_input: std::sync::Mutex<Option<Instant>>,
 }
 
 // ------------------------------------------------------------------------- errors
@@ -236,7 +237,23 @@ fn parse_body<T: DeserializeOwned>(body: &Bytes) -> Result<T, ApiError> {
 
 /// The current screen, as fresh as this session can honestly make it.
 async fn fresh_frame(state: &AppState) -> Result<Framebuffer, ApiError> {
-    let after_input = state.touched.swap(false, Ordering::SeqCst);
+    let last_input = state
+        .last_input
+        .lock()
+        .expect("the input record is never held across a panic")
+        .take();
+    let after_input = last_input.is_some();
+    if let Some(at) = last_input {
+        // "The next update" is not enough on its own: a desktop that streams small
+        // updates all the time (Apple's does, many times a second) sends one before the
+        // app has redrawn. Let the input settle first, or what is left of it.
+        let clock = state.config.clock.as_ref();
+        let settled = at + state.config.input_settle;
+        let now = clock.now();
+        if settled > now {
+            clock.sleep(settled - now).await;
+        }
+    }
     if !state.session.painted() {
         // Nothing to fall back on: the framebuffer is black at exactly screen
         // dimensions, which is a lie a model cannot detect. Ask for the whole screen,
@@ -282,19 +299,38 @@ fn to_image(frame: &Framebuffer) -> Result<Image, ApiError> {
 async fn computer(State(state): State<Arc<AppState>>, body: Bytes) -> Result<Response, ApiError> {
     let action: ComputerAction = parse_body(&body)?;
     let (width, height) = state.session.size();
-    let ops = plan(&action, PlanContext { width, height })?;
+    let ops = plan(
+        &action,
+        PlanContext {
+            width,
+            height,
+            drag: state.config.drag,
+        },
+    )?;
 
     // One action at a time, start to finish — see `AppState::hands`. The guard also
     // carries the cursor, and `execute` writes through it as the pointer moves, so a
     // run that fails part way still records where the pointer actually got to.
     let mut hands = state.hands.lock().await;
-    if ops
+    let input = ops
         .iter()
-        .any(|op| matches!(op, RfbOp::Pointer { .. } | RfbOp::Key { .. }))
-    {
-        state.touched.store(true, Ordering::SeqCst);
+        .any(|op| matches!(op, RfbOp::Pointer { .. } | RfbOp::Key { .. }));
+    let outcome = execute(
+        state.session.as_ref(),
+        &ops,
+        &mut hands,
+        state.config.clock.as_ref(),
+    )
+    .await;
+    if input {
+        // Stamped when the action ends, which is when its last event went out — even
+        // one that failed part way sent something.
+        *state
+            .last_input
+            .lock()
+            .expect("the input record is never held across a panic") =
+            Some(state.config.clock.now());
     }
-    let outcome = execute(state.session.as_ref(), &ops, &mut hands).await;
     let cursor = *hands;
     drop(hands);
     outcome.map_err(from_rfb)?;
@@ -396,7 +432,7 @@ pub(crate) fn router(session: Arc<dyn Session>, config: ServerConfig) -> Router 
         session,
         config,
         hands: tokio::sync::Mutex::new([0, 0]),
-        touched: AtomicBool::new(false),
+        last_input: std::sync::Mutex::new(None),
     });
 
     Router::new()
