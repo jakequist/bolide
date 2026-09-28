@@ -16,7 +16,9 @@
 //!
 //! - **Screenshots are fresh.** Before encoding, if the session is unpainted, ask for a
 //!   non-incremental update and wait up to `frame_timeout`; otherwise a short
-//!   incremental refresh is enough. An unpainted framebuffer is a *black screen at
+//!   incremental refresh is enough — unless a pointer or key event went out since the
+//!   last screenshot, when it waits up to `AFTER_INPUT_WAIT` for the update that
+//!   follows it. An unpainted framebuffer is a *black screen at
 //!   exactly screen dimensions* — indistinguishable from a real black screen, and a
 //!   model shown one reports the app as blank. A timeout on an already-painted frame
 //!   answers with what we have; a timeout on an unpainted one is
@@ -37,6 +39,7 @@
 //! a recording fake `Session`.
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -51,7 +54,7 @@ use base64::Engine as _;
 use bolide_rfb::{Error as RfbError, Framebuffer, Session};
 use serde::de::DeserializeOwned;
 
-use crate::actions::{execute, plan, ActionError, PlanContext};
+use crate::actions::{execute, plan, ActionError, PlanContext, RfbOp};
 use crate::image::encode_png;
 use crate::wire::{
     ClipboardRequest, ClipboardResponse, ComputerAction, ComputerResponse, ErrorCode,
@@ -67,6 +70,16 @@ use crate::{Running, ServerConfig};
 /// long wait is reserved for the case where waiting is the only honest answer — an
 /// unpainted framebuffer.
 const INCREMENTAL_WAIT: Duration = Duration::from_millis(250);
+
+/// How long a screenshot that follows input waits for the update that follows it.
+///
+/// A desktop does not answer an input instantly: Apple's Screen Sharing sends its
+/// updates on a period of about a fifth of a second, and the app has to redraw first.
+/// [`INCREMENTAL_WAIT`] is shorter than that, so a screenshot right after a click would
+/// time out and hand back the frame from *before* the click. Bounded, and capped by
+/// `frame_timeout`, because an input can change nothing at all — a click on the spot
+/// the pointer already rests on — and then no update ever comes.
+const AFTER_INPUT_WAIT: Duration = Duration::from_secs(2);
 
 /// What a handler gets to work with.
 struct AppState {
@@ -89,6 +102,9 @@ struct AppState {
     /// record is the only answer `cursor_position` can give, and a record updated
     /// outside the lock would be a third caller's position.
     hands: tokio::sync::Mutex<[i32; 2]>,
+    /// Whether a pointer or key event has gone to the desktop since the last screenshot.
+    /// The next screenshot waits [`AFTER_INPUT_WAIT`] for the update that shows it.
+    touched: AtomicBool,
 }
 
 // ------------------------------------------------------------------------- errors
@@ -220,6 +236,7 @@ fn parse_body<T: DeserializeOwned>(body: &Bytes) -> Result<T, ApiError> {
 
 /// The current screen, as fresh as this session can honestly make it.
 async fn fresh_frame(state: &AppState) -> Result<Framebuffer, ApiError> {
+    let after_input = state.touched.swap(false, Ordering::SeqCst);
     if !state.session.painted() {
         // Nothing to fall back on: the framebuffer is black at exactly screen
         // dimensions, which is a lie a model cannot detect. Ask for the whole screen,
@@ -231,11 +248,17 @@ async fn fresh_frame(state: &AppState) -> Result<Framebuffer, ApiError> {
             .map_err(from_rfb);
     }
 
-    let wait = state.config.frame_timeout.min(INCREMENTAL_WAIT);
+    let wait = state.config.frame_timeout.min(if after_input {
+        AFTER_INPUT_WAIT
+    } else {
+        INCREMENTAL_WAIT
+    });
     match state.session.refresh(true, wait).await {
         Ok(frame) => Ok(frame),
         // A still screen produces no update. That is not a failure — the frame we
-        // already have is current by definition.
+        // already have is current by definition. (`refresh` ignores an update that was
+        // already arriving, and the continuous read loop has applied everything since,
+        // so what we hold is the desktop's latest word.)
         Err(RfbError::Timeout(_)) => state.session.framebuffer().await.map_err(from_rfb),
         Err(other) => Err(from_rfb(other)),
     }
@@ -265,6 +288,12 @@ async fn computer(State(state): State<Arc<AppState>>, body: Bytes) -> Result<Res
     // carries the cursor, and `execute` writes through it as the pointer moves, so a
     // run that fails part way still records where the pointer actually got to.
     let mut hands = state.hands.lock().await;
+    if ops
+        .iter()
+        .any(|op| matches!(op, RfbOp::Pointer { .. } | RfbOp::Key { .. }))
+    {
+        state.touched.store(true, Ordering::SeqCst);
+    }
     let outcome = execute(state.session.as_ref(), &ops, &mut hands).await;
     let cursor = *hands;
     drop(hands);
@@ -367,6 +396,7 @@ pub(crate) fn router(session: Arc<dyn Session>, config: ServerConfig) -> Router 
         session,
         config,
         hands: tokio::sync::Mutex::new([0, 0]),
+        touched: AtomicBool::new(false),
     });
 
     Router::new()

@@ -120,6 +120,8 @@ where
         desktop_name: init.name,
         connected: AtomicBool::new(true),
         generation: AtomicU64::new(0),
+        updates_begun: AtomicU64::new(0),
+        last_painted_update: AtomicU64::new(0),
         outstanding: AtomicUsize::new(0),
         // Nothing has been asked for yet, so there is no baseline for "incremental".
         needs_full: AtomicBool::new(true),
@@ -392,6 +394,9 @@ async fn read_framebuffer_update<R>(
 where
     R: AsyncRead + Unpin,
 {
+    // Counted at the first byte, before anything is decoded, so a `refresh` called while
+    // this update is still arriving knows it was composed before the call.
+    let update = inner.updates_begun.fetch_add(1, Ordering::SeqCst) + 1;
     let _pad = conn.u8().await?;
     let count = conn.u16().await?;
     let mut painted_any = false;
@@ -453,23 +458,26 @@ where
         }
     }
 
-    inner
-        .outstanding
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
-            Some(v.saturating_sub(1))
-        })
-        .ok();
+    // One update answers *every* request the server had read, not just one of them: RFC
+    // 6143 §7.5.3 lets a server fold pending requests together, and Apple's Screen
+    // Sharing, TigerVNC and libvncserver all do — they keep a requested region, not a
+    // queue. Counting one answer per request would leave a phantom request "in flight"
+    // after the first fold, and continuous mode, waiting for it, would never ask again:
+    // a frozen framebuffer that only an explicit refresh could move.
+    inner.outstanding.store(0, Ordering::SeqCst);
 
-    // A resize always earns a request — the screen we hold is black and wrong. Otherwise
-    // continuous mode tops up, but only when nothing is already in flight.
+    // A resize always earns a request — the screen we hold is black and wrong — and
+    // continuous mode asks again after every update, which keeps exactly one request
+    // outstanding: it is answered, and replaced, and never doubled.
     //
     // This happens *before* `Painted` goes out, so that everything an observer of the
     // event might ask about the session is already true when it arrives.
-    if resized || (continuous && inner.outstanding.load(Ordering::SeqCst) == 0) {
+    if resized || continuous {
         let _ = inner.send(Command::Request { incremental: true });
     }
     if painted_any {
         let generation = inner.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        inner.last_painted_update.store(update, Ordering::SeqCst);
         inner.lock().painted = true;
         inner.emit(ServerEvent::Painted { generation });
     }

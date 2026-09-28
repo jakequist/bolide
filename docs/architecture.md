@@ -61,6 +61,14 @@ Two more consequences worth naming:
   black at exactly screen dimensions. That is indistinguishable from a desktop showing a
   black screen, and a model handed one reports the app as blank. `Session::painted()`
   is the flag, and `/screenshot` waits on it.
+- **An update answers every pending request.** The read loop asks for another
+  incremental update each time one arrives, so the framebuffer stays current without
+  anyone asking. RFB lets a server fold several pending requests into one update, and
+  Apple's Screen Sharing, TigerVNC and libvncserver all do. Counting one answer per
+  request would leave a phantom request in flight after the first fold, and the loop
+  would stop asking. The screen would freeze at whatever the last screenshot fetched.
+  For the same reason `refresh` resolves only on an update that *began* after it was
+  called, since one already arriving was composed before whatever the caller just did.
 - **Death is an event, not a hang.** When the socket dies the task emits
   `ServerEvent::Disconnected` and every later command returns `Error::Closed`
   immediately. The failure a daemon must never have is the silent one.

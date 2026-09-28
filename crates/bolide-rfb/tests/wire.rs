@@ -739,6 +739,121 @@ async fn continuous_mode_keeps_exactly_one_request_outstanding() {
     assert_eq!(session.outstanding_requests(), 1);
 }
 
+/// RFB lets a server answer several pending FramebufferUpdateRequests with **one**
+/// update (RFC 6143 §7.5.3), and real ones do: Apple's Screen Sharing, TigerVNC and
+/// libvncserver all keep a requested *region*, not a queue. Counting one answer per
+/// request then leaves a request "outstanding" forever, continuous mode never asks
+/// again, and the framebuffer freezes at whatever the last explicit refresh fetched —
+/// which is how a screenshot taken after a click came back byte-identical to the one
+/// before it.
+///
+/// This is also the first-frame path on a slow desktop: the opening request is still
+/// unanswered when a screenshot gives up waiting and asks again, and the desktop then
+/// answers both at once.
+#[tokio::test]
+async fn one_update_answering_two_requests_does_not_stop_continuous_mode() {
+    let (session, mut server) = connected(Config::default()).await;
+    let mut events = session.events();
+    skip_setup(&mut server).await;
+
+    assert_eq!(
+        expect(&mut server, 10).await,
+        proto::framebuffer_update_request(false, 0, 0, W, H),
+        "the opening request"
+    );
+    // A screenshot that ran out of patience before the desktop said anything.
+    let err = session
+        .refresh(false, Duration::from_millis(50))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::Timeout(_)), "{err:?}");
+    assert_eq!(
+        expect(&mut server, 10).await,
+        proto::framebuffer_update_request(false, 0, 0, W, H),
+        "the screenshot's own request"
+    );
+
+    // The desktop answers both with one update.
+    server
+        .write_all(&update(&[raw_rect(0, 0, 1, 1, &[RED])]))
+        .await
+        .unwrap();
+    next_matching(&mut events, |e| matches!(e, ServerEvent::Painted { .. })).await;
+
+    assert_eq!(
+        expect(&mut server, 10).await,
+        proto::framebuffer_update_request(true, 0, 0, W, H),
+        "continuous mode must keep asking after an update, however many requests it answered"
+    );
+    assert_eq!(session.outstanding_requests(), 1);
+}
+
+/// An update that was already on the wire when `refresh` was called was composed before
+/// anything the caller did just now — a click, a keystroke — so it cannot be the frame
+/// that shows it. `refresh` resolves on an update that *begins* after the call.
+#[tokio::test]
+async fn refresh_does_not_resolve_on_an_update_that_was_already_arriving() {
+    let config = Config {
+        continuous: false,
+        ..Config::default()
+    };
+    let (session, mut server) = connected(config).await;
+    skip_setup(&mut server).await;
+
+    // A baseline, so the next request is incremental.
+    let first = session.refresh(false, PATIENCE);
+    let script = async {
+        let _ = expect(&mut server, 10).await;
+        server
+            .write_all(&update(&[raw_rect(0, 0, 1, 1, &[RED])]))
+            .await
+            .unwrap();
+    };
+    let (frame, ()) = tokio::join!(first, script);
+    assert_eq!(frame.unwrap().pixel(0, 0), Some(RED));
+    assert_eq!(session.updates_begun(), 1);
+
+    // An update the reader has started but not finished: header, rect header and half
+    // of the one pixel.
+    let stale = update(&[raw_rect(0, 0, 1, 1, &[GREEN])]);
+    let (head, tail) = stale.split_at(stale.len() - 2);
+    server.write_all(head).await.unwrap();
+    tokio::time::timeout(PATIENCE, async {
+        while session.updates_begun() < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the reader never started the second update");
+
+    let mut events = session.events();
+    let refresh = session.refresh(true, PATIENCE);
+    let script = async {
+        assert_eq!(
+            expect(&mut server, 10).await,
+            proto::framebuffer_update_request(true, 0, 0, W, H)
+        );
+        // The in-flight update lands first — and is applied — and only then does the one
+        // that answers the request go out, so a refresh that took the first is caught
+        // holding it rather than racing the second.
+        server.write_all(tail).await.unwrap();
+        assert_eq!(
+            next_matching(&mut events, |e| matches!(e, ServerEvent::Painted { .. })).await,
+            ServerEvent::Painted { generation: 2 }
+        );
+        server
+            .write_all(&update(&[raw_rect(0, 0, 1, 1, &[BLUE])]))
+            .await
+            .unwrap();
+    };
+    let (frame, ()) = tokio::join!(refresh, script);
+    assert_eq!(
+        frame.unwrap().pixel(0, 0),
+        Some(BLUE),
+        "refresh answered with the update that was already arriving when it asked"
+    );
+}
+
 /// The failure a daemon must never have is the silent one: a command that hangs
 /// forever on a socket that died ten minutes ago.
 #[tokio::test]

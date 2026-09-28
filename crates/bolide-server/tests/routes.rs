@@ -57,6 +57,9 @@ struct Fake {
     refresh: Refresh,
     fb: Mutex<Framebuffer>,
     log: Mutex<Vec<Call>>,
+    /// The `timeout` of every `refresh`, in order: how long a screenshot was willing to
+    /// wait for the desktop.
+    waits: Mutex<Vec<Duration>>,
     last_cut: Mutex<Option<String>>,
     events: broadcast::Sender<ServerEvent>,
 }
@@ -80,6 +83,7 @@ impl Fake {
             refresh: Refresh::Paints,
             fb: Mutex::new(fb),
             log: Mutex::new(Vec::new()),
+            waits: Mutex::new(Vec::new()),
             last_cut: Mutex::new(None),
             events: broadcast::channel(16).0,
         })
@@ -143,9 +147,10 @@ impl Session for Fake {
     async fn refresh(
         &self,
         incremental: bool,
-        _timeout: Duration,
+        timeout: Duration,
     ) -> bolide_rfb::Result<Framebuffer> {
         self.log.lock().unwrap().push(Call::Refresh { incremental });
+        self.waits.lock().unwrap().push(timeout);
         self.alive()?;
         match self.refresh {
             Refresh::Paints => {
@@ -475,6 +480,63 @@ async fn a_painted_screen_that_times_out_answers_with_the_frame_it_has() {
         h.session.calls().contains(&Call::Framebuffer),
         "it should fall back to the frame it has: {:?}",
         h.session.calls()
+    );
+    h.shutdown().await;
+}
+
+/// A desktop answers an input a few hundred milliseconds later — Apple's Screen Sharing
+/// batches its updates on about that period — so the short wait that suits a still
+/// screen hands back the frame from *before* the click. A screenshot that follows input
+/// waits for the update that follows it; one that follows nothing keeps the short wait.
+#[tokio::test]
+async fn a_screenshot_after_input_waits_longer_for_the_update_that_follows_it() {
+    let h = Harness::start(
+        Fake::new(32, 16),
+        ServerConfig {
+            frame_timeout: Duration::from_secs(5),
+            ..Default::default()
+        },
+    )
+    .await;
+    let waits = || h.session.waits.lock().unwrap().clone();
+
+    expect_ok(h.action(&ComputerAction::Screenshot).await).await;
+    expect_ok(
+        h.action(&ComputerAction::LeftClick { coordinate: [3, 4] })
+            .await,
+    )
+    .await;
+    expect_ok(h.action(&ComputerAction::Screenshot).await).await;
+    // Nothing happened since that one.
+    let _ = h.get("/screenshot").await;
+    expect_ok(
+        h.action(&ComputerAction::Key {
+            text: "Return".into(),
+        })
+        .await,
+    )
+    .await;
+    let _ = h.get("/screenshot").await;
+
+    let short = Duration::from_millis(250);
+    let long = Duration::from_secs(2);
+    assert_eq!(waits(), vec![short, long, short, long]);
+    h.shutdown().await;
+}
+
+/// The longer wait is still capped by `frame_timeout`, which is the caller's own bound.
+#[tokio::test]
+async fn the_wait_after_input_never_exceeds_the_frame_timeout() {
+    let h = Harness::open(Fake::new(32, 16)).await;
+    expect_ok(
+        h.action(&ComputerAction::LeftClick { coordinate: [3, 4] })
+            .await,
+    )
+    .await;
+    expect_ok(h.action(&ComputerAction::Screenshot).await).await;
+    assert_eq!(
+        h.session.waits.lock().unwrap().clone(),
+        vec![Duration::from_millis(50)]
     );
     h.shutdown().await;
 }

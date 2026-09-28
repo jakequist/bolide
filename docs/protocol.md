@@ -78,6 +78,20 @@ bolide asks the desktop for a fresh frame first. If the framebuffer has never be
 painted it requests a full update and waits; if that times out the answer is `504` with
 `"error": "timeout"`, rather than a black image that looks like a real screen.
 
+**A screenshot after input waits for the next update that follows it.** When a click,
+key, scroll or any other pointer or key event has gone to the desktop since the last
+screenshot, bolide asks for an update and waits up to 2 seconds for one that *began
+arriving after* it asked. An update that was already on its way was composed before the
+input, so it does not count. Desktops take a moment to answer: Apple's Screen Sharing
+sends updates about five times a second, and the app has to redraw first. If nothing
+arrives in time, because the input changed nothing on screen, the answer is the frame
+bolide holds, which is still the desktop's latest. Without input since the last
+screenshot, the wait is 250 ms. Both waits are capped by the server's frame timeout.
+
+Between screenshots bolide keeps the framebuffer current by itself, asking for another
+incremental update each time one arrives. A server may answer several pending requests
+with one update, and most do, so bolide counts an update as answering all of them.
+
 ### `cursor_position`
 
 ```json

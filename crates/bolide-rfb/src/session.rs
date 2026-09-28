@@ -12,14 +12,21 @@
 //!
 //! - **Ordering.** Commands are applied in the order they were sent. A `type` that
 //!   turns into forty KeyEvents must not interleave with a concurrent `pointer`.
-//! - **`refresh(incremental=false)`** sends a non-incremental FramebufferUpdateRequest
-//!   and resolves on the *next* applied update — not on one that was already in flight.
+//! - **`refresh`** sends a FramebufferUpdateRequest and resolves on the first applied
+//!   update that *began arriving after the call* — not on one that was already in
+//!   flight, which the server composed before anything the caller just did. The read
+//!   loop numbers updates at their first byte (`updates_begun`) and records which one
+//!   last painted (`last_painted_update`); `refresh` waits until that passes the count
+//!   it saw when it was called.
 //! - **The first request is never incremental**, whatever the caller asked for:
 //!   "incremental" means "changes since the update you last sent me", and before the
 //!   first there is no baseline.
 //! - **Continuous mode** re-issues an incremental request after each applied update, so
 //!   an idle handle still holds a current screen. It must not spin: one request
-//!   outstanding at a time.
+//!   outstanding at a time. And it must not *stall*: RFC 6143 §7.5.3 lets a server
+//!   answer several pending requests with one update, and real servers (Apple's Screen
+//!   Sharing among them) do, so an update clears every outstanding request rather than
+//!   one of them.
 //! - **Death is an event.** When the socket dies the task emits
 //!   `ServerEvent::Disconnected`, marks `is_connected()` false, and every subsequent
 //!   command returns `Error::Closed` rather than hanging.
@@ -91,8 +98,15 @@ pub(crate) struct Inner {
     pub(crate) desktop_name: String,
     pub(crate) connected: AtomicBool,
     pub(crate) generation: AtomicU64,
-    /// FramebufferUpdateRequests sent but not yet answered. Continuous mode only adds
-    /// one when this is zero, which is what stops it spinning.
+    /// FramebufferUpdates the read loop has started, counted from 1 at the message-type
+    /// byte.
+    pub(crate) updates_begun: AtomicU64,
+    /// The `updates_begun` number of the last update that painted anything. `refresh`
+    /// compares it with the count at the moment it was called.
+    pub(crate) last_painted_update: AtomicU64,
+    /// FramebufferUpdateRequests sent since the last update arrived. An update answers
+    /// all of them — a server may fold pending requests into one — so it resets this to
+    /// zero rather than counting one off.
     pub(crate) outstanding: AtomicUsize,
     /// True until a non-incremental request has gone out, and true again after a
     /// resize: there is nothing for "incremental" to be relative to.
@@ -171,6 +185,13 @@ impl SessionHandle {
     pub fn outstanding_requests(&self) -> usize {
         self.inner.outstanding.load(Ordering::SeqCst)
     }
+
+    /// How many FramebufferUpdates the read loop has started reading. Exposed for the
+    /// test that `refresh` ignores an update already arriving when it was called.
+    #[doc(hidden)]
+    pub fn updates_begun(&self) -> u64 {
+        self.inner.updates_begun.load(Ordering::SeqCst)
+    }
 }
 
 #[async_trait::async_trait]
@@ -199,11 +220,19 @@ impl Session for SessionHandle {
         // Subscribe *before* asking, or an update that arrives while the request is
         // still being written is missed and the wait runs to the timeout.
         let mut events = self.inner.events.subscribe();
+        // An update the read loop has already started was composed before this call, so
+        // it cannot show whatever the caller just did — a click, a keystroke. Only one
+        // that begins after this point answers the request.
+        let floor = self.inner.updates_begun.load(Ordering::SeqCst);
         self.inner.send(Command::Request { incremental })?;
         let outcome = tokio::time::timeout(timeout, async {
             loop {
                 match events.recv().await {
-                    Ok(ServerEvent::Painted { .. }) => return Ok(()),
+                    Ok(ServerEvent::Painted { .. })
+                        if self.inner.last_painted_update.load(Ordering::SeqCst) > floor =>
+                    {
+                        return Ok(())
+                    }
                     Ok(ServerEvent::Disconnected { .. }) => return Err(Error::Closed),
                     Ok(_) => continue,
                     // A caller that fell behind still wants the *next* frame, not an
