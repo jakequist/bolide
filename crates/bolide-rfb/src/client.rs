@@ -71,7 +71,7 @@ use tokio::sync::{broadcast, mpsc, watch};
 use crate::proto::{self, PixelFormat};
 use crate::session::{Command, Guard, Inner, State};
 use crate::zrle::ZrleDecoder;
-use crate::{Config, Error, Framebuffer, Result, ServerEvent, SessionHandle};
+use crate::{ard, AuthMode, Config, Error, Framebuffer, Result, ServerEvent, SessionHandle};
 
 /// Broadcast depth. A subscriber that falls this far behind lags rather than stalling
 /// the read loop — see `RecvError::Lagged` handling in `session.rs`.
@@ -198,7 +198,9 @@ where
     };
 
     let mut expect_security_result = true;
-    if chosen == proto::SECURITY_VNC_AUTH {
+    if chosen == proto::SECURITY_ARD {
+        ard_authenticate(conn, config).await?;
+    } else if chosen == proto::SECURITY_VNC_AUTH {
         // Fail before the response, not after: sending the DES of an empty password
         // is a login attempt, and a server that counts them will lock the account.
         let Some(password) = config.password.as_deref() else {
@@ -246,6 +248,61 @@ where
     })
 }
 
+/// Apple Remote Desktop authentication (type 30): read the server's Diffie-Hellman
+/// challenge, draw a private exponent and random filler, and send the encrypted
+/// credential block and the client's public key. The transform itself lives in
+/// [`crate::ard`], the one statement both this client and the fake server share.
+async fn ard_authenticate<S>(conn: &mut Conn<S>, config: &Config) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    // Fail before writing anything, the way VNC auth does: a username is how the block
+    // says who to log in as, and a password is the credential it carries.
+    let Some(username) = config.username.as_deref() else {
+        return Err(Error::UsernameRequired);
+    };
+    let Some(password) = config.password.as_deref() else {
+        return Err(Error::PasswordRequired);
+    };
+
+    let generator = conn.u16().await?;
+    let key_len = conn.u16().await? as usize;
+    if !(ard::MIN_KEY_LEN..=ard::MAX_KEY_LEN).contains(&key_len) {
+        return Err(Error::Protocol(format!(
+            "the server's Apple-auth key length ({key_len}) is outside {}..={} bytes",
+            ard::MIN_KEY_LEN,
+            ard::MAX_KEY_LEN
+        )));
+    }
+    let prime = conn.bytes(key_len).await?;
+    let server_public = conn.bytes(key_len).await?;
+
+    // Apple's own viewer draws a private exponent twice the key length in bytes.
+    let mut private = vec![0u8; key_len * 2];
+    fill_random(&mut private)?;
+    let mut filler = [0u8; ard::CREDENTIAL_LEN];
+    fill_random(&mut filler)?;
+
+    let payload = ard::client_response(
+        u32::from(generator),
+        &prime,
+        &server_public,
+        username,
+        password,
+        &private,
+        &filler,
+    )
+    .map_err(|e| Error::Protocol(format!("Apple-auth response: {e:?}")))?;
+    conn.write(&payload).await?;
+    Ok(())
+}
+
+/// Fill a buffer with cryptographically strong random bytes.
+fn fill_random(buf: &mut [u8]) -> Result<()> {
+    getrandom::getrandom(buf)
+        .map_err(|e| Error::Protocol(format!("could not read the system RNG: {e}")))
+}
+
 /// The 3.7+ security list: read it, pick one, write the choice.
 async fn choose_security<S>(conn: &mut Conn<S>, config: &Config) -> Result<u8>
 where
@@ -257,16 +314,36 @@ where
     }
     let offered = conn.bytes(count as usize).await?;
     let has = |t: u8| offered.contains(&t);
-    // A password does not *require* VNC auth — a server that wants none should still
-    // connect — but when both are on offer the one that authenticates wins.
-    let chosen = if config.password.is_some() && has(proto::SECURITY_VNC_AUTH) {
-        proto::SECURITY_VNC_AUTH
-    } else if has(proto::SECURITY_NONE) {
-        proto::SECURITY_NONE
-    } else if has(proto::SECURITY_VNC_AUTH) {
-        proto::SECURITY_VNC_AUTH
-    } else {
-        return Err(Error::NoSupportedSecurity { offered });
+    // `Auto` prefers Apple type 30 when the server offers it and there is a username to
+    // log in as — it authenticates as a named user, where VNC auth can only reach the
+    // console — then classic VNC auth, then None. The two force values pin either.
+    let can_ard = config.username.is_some() && config.password.is_some();
+    let chosen = match config.auth {
+        AuthMode::Ard => {
+            if !has(proto::SECURITY_ARD) {
+                return Err(Error::NoSupportedSecurity { offered });
+            }
+            proto::SECURITY_ARD
+        }
+        AuthMode::Vnc => {
+            if !has(proto::SECURITY_VNC_AUTH) {
+                return Err(Error::NoSupportedSecurity { offered });
+            }
+            proto::SECURITY_VNC_AUTH
+        }
+        AuthMode::Auto => {
+            if can_ard && has(proto::SECURITY_ARD) {
+                proto::SECURITY_ARD
+            } else if config.password.is_some() && has(proto::SECURITY_VNC_AUTH) {
+                proto::SECURITY_VNC_AUTH
+            } else if has(proto::SECURITY_NONE) {
+                proto::SECURITY_NONE
+            } else if has(proto::SECURITY_VNC_AUTH) {
+                proto::SECURITY_VNC_AUTH
+            } else {
+                return Err(Error::NoSupportedSecurity { offered });
+            }
+        }
     };
     conn.write(&[chosen]).await?;
     Ok(chosen)

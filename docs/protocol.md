@@ -201,3 +201,45 @@ too. `cmd+space` opens Spotlight on the far end. `meta` is still X11's `Meta_L`,
 
 Chords split on `+` and press left to right, releasing in reverse, so `ctrl+shift+t`
 holds both modifiers while `t` goes down. A literal plus is `plus`.
+
+## RFB authentication (the connect-time handshake)
+
+This is a different layer from the HTTP `--token` above: it is how `bolide connect`
+authenticates to the *desktop*, during the RFB handshake, before any HTTP exists. The
+authoritative statement is `bolide_rfb::ard` and `bolide_rfb::proto`; this is prose.
+
+bolide handles three security types, chosen by `--auth`:
+
+| type | number | carries | reaches |
+|---|---|---|---|
+| `None` | 1 | nothing | a server with auth off |
+| classic VNC auth | 2 | a password (DES challenge) | whatever shares the console |
+| Apple Remote Desktop | 30 | a **username and password** | that named user's login |
+
+`--auth auto` (the default) prefers type 30 when the server offers it and a `--username`
+is set, then classic VNC auth, then `None`; `--auth ard` and `--auth vnc` pin one.
+
+**Type 30**, as measured against macOS (see the Apple 003.889 notes bolide was built
+from): the server sends a Diffie-Hellman challenge — a `u16` generator, a `u16` key
+length `L`, then the `L`-byte prime and its `L`-byte public key (macOS sends RFC 5054's
+4096-bit group, so `L = 512`). The client replies with a **128-byte credential block**
+(the username at offset 0 and the password at offset 64, each NUL-terminated, the rest
+random) encrypted with **AES-128 in ECB mode** under `MD5(shared secret)`, followed by
+its own `L`-byte public key. The server answers with a bare `u32` SecurityResult.
+
+**Why this matters on macOS.** Classic VNC auth has only a password, so it lands on
+whatever owns the physical console — connect while someone is logged in and you see
+*their* screen. Type 30 names a user, so `--username meteor --auth ard` authenticates as
+`meteor` and reaches a Mac sitting at its login window.
+
+### Not yet implemented: the newer Apple types and session selection
+
+Modern macOS also offers SRP/RSA security types (33, 35, 36) and, after authentication,
+an optional **session-select exchange**: the client sets a bit in ClientInit (`0x40`),
+the server marks ServerInit (flag `0x04`) and offers a choice of *share the console
+user's screen*, *log in as myself* (a separate virtual-display session beside the console
+user), or *a virtual display* — this is the "Share screen / Log in as yourself" picker in
+Apple's own viewer. bolide does **not** implement it: it sends a plain ClientInit, so with
+type 30 it reaches whatever session the server gives a type-30 login by default. The
+wire format of the session-select block is undocumented in public sources and would need
+an empirical capture of Apple's viewer to reproduce.

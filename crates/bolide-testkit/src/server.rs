@@ -23,6 +23,7 @@ use std::ops::ControlFlow;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use bolide_rfb::ard;
 use bolide_rfb::proto::{self, client_msg, server_msg, PixelFormat};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
@@ -43,6 +44,20 @@ const CHALLENGE: [u8; 16] = [
 const AUTH_FAILED: &str = "authentication failed";
 
 const BLACK: [u8; 4] = [0, 0, 0, 255];
+
+/// The Diffie-Hellman group the fake offers for Apple auth (type 30). A fixed
+/// [`MIN_KEY_LEN`](bolide_rfb::ard::MIN_KEY_LEN)-byte modulus and a fixed server private
+/// exponent: the test proves the client can do the DH-and-AES transform, not that it can
+/// do it over an unpredictable group, and a deterministic group fails the same way
+/// twice. The modulus need not be prime for the exchange to agree with itself.
+const ARD_GENERATOR: u16 = 5;
+const ARD_PRIME: [u8; 64] = {
+    let mut p = [0x3Bu8; 64];
+    p[0] = 0xC7;
+    p[63] = 0x8D; // odd
+    p
+};
+const ARD_SERVER_PRIVATE: [u8; 64] = [0x5A; 64];
 
 /// A running fake RFB server on loopback.
 pub struct FakeServer {
@@ -273,6 +288,15 @@ impl FakeServerBuilder {
     /// The screen the fake shows.
     pub fn screen(mut self, screen: Screen) -> FakeServerBuilder {
         self.screen = screen;
+        self
+    }
+
+    /// Require this username and password through Apple auth (security type 30).
+    pub fn ard(mut self, username: &str, password: &str) -> FakeServerBuilder {
+        self.security = Security::Ard {
+            username: username.to_string(),
+            password: password.to_string(),
+        };
         self
     }
 
@@ -566,6 +590,7 @@ async fn handshake(
     let offered: &[u8] = match cfg.security {
         Security::None => &[proto::SECURITY_NONE],
         Security::VncAuth(_) | Security::AlwaysFail => &[proto::SECURITY_VNC_AUTH],
+        Security::Ard { .. } => &[proto::SECURITY_ARD],
         // A type bolide does not implement, so its "no security type in common" path is
         // reachable without inventing a number.
         Security::Unsupported => &[proto::SECURITY_ARD],
@@ -606,6 +631,35 @@ async fn handshake(
             let mut response = [0u8; 16];
             read.read_exact(&mut response).await?;
             fail_security(write, AUTH_FAILED).await
+        }
+        Security::Ard { username, password } => {
+            // Server side of the Diffie-Hellman credential exchange, using the same
+            // transform the client does (bolide_rfb::ard), so the two cannot diverge.
+            let server_public =
+                ard::dh_public(u32::from(ARD_GENERATOR), &ARD_PRIME, &ARD_SERVER_PRIVATE);
+            let mut challenge = Vec::new();
+            challenge.extend_from_slice(&ARD_GENERATOR.to_be_bytes());
+            challenge.extend_from_slice(&(ARD_PRIME.len() as u16).to_be_bytes());
+            challenge.extend_from_slice(&ARD_PRIME);
+            challenge.extend_from_slice(&server_public);
+            write.write_all(&challenge).await?;
+
+            let mut block = [0u8; ard::CREDENTIAL_LEN];
+            read.read_exact(&mut block).await?;
+            let mut client_public = vec![0u8; ARD_PRIME.len()];
+            read.read_exact(&mut client_public).await?;
+
+            let shared = ard::dh_shared(&client_public, &ARD_PRIME, &ARD_SERVER_PRIVATE);
+            ard::aes_ecb_decrypt(&ard::aes_key(&shared), &mut block);
+            let (got_user, got_pass) = ard::unpack_credentials(&block);
+            if &got_user == username && &got_pass == password {
+                write
+                    .write_all(&proto::SECURITY_RESULT_OK.to_be_bytes())
+                    .await?;
+                Ok(())
+            } else {
+                fail_security(write, AUTH_FAILED).await
+            }
         }
     }
 }

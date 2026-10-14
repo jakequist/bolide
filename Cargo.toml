@@ -18,11 +18,15 @@ authors = ["the bolide contributors"]
 # One pin per dependency, for the whole workspace. A version that appears twice is a
 # version that can disagree with itself; every crate says `workspace = true`.
 [workspace.dependencies]
+aes = "0.8"
 anyhow = "1"
 async-trait = "0.1"
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
 base64 = "0.22"
 cipher = "0.4"
+getrandom = "0.2"
+md-5 = "0.10"
+num-bigint = "0.4"
 clap = { version = "4", features = ["derive", "env"] }
 des = "0.8"
 flate2 = "1"

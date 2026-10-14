@@ -145,6 +145,15 @@ pub struct ConnectArgs {
     /// A file holding the VNC password. Read once, never stored.
     #[arg(long, value_name = "FILE")]
     pub password_file: Option<PathBuf>,
+    /// Which authentication to use.
+    ///
+    /// `auto` (the default) picks Apple's type 30 when the server offers it and a
+    /// `--username` is set, otherwise classic VNC auth. Apple auth logs in **as the
+    /// named user**, so on a Mac it reaches that user — including at the login window —
+    /// rather than whatever shares the physical console, which is all classic VNC auth
+    /// (password only) can do. `ard` forces Apple auth and `vnc` forces classic.
+    #[arg(long, value_enum, default_value_t = Auth::Auto)]
+    pub auth: Auth,
     /// Where the computer-use server listens. Loopback by default; any address you
     /// name is used as given.
     #[arg(long, default_value = "127.0.0.1:0", value_name = "ADDR")]
@@ -251,6 +260,42 @@ impl Button {
             Button::Left => ComputerAction::LeftClick { coordinate },
             Button::Right => ComputerAction::RightClick { coordinate },
             Button::Middle => ComputerAction::MiddleClick { coordinate },
+        }
+    }
+}
+
+/// Which RFB authentication to use. The single statement of the `--auth` vocabulary:
+/// clap validates against it and [`Auth::as_str`] re-emits it when the daemon re-execs,
+/// so a value that parses cannot become a different mode in the child.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "lower")]
+pub enum Auth {
+    /// Apple type 30 when offered and a username is set, else classic VNC auth.
+    #[default]
+    Auto,
+    /// Force Apple Remote Desktop authentication (type 30).
+    Ard,
+    /// Force classic VNC authentication (type 2).
+    Vnc,
+}
+
+impl Auth {
+    /// The spelling `--auth` accepts and the daemon re-emits.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Auth::Auto => "auto",
+            Auth::Ard => "ard",
+            Auth::Vnc => "vnc",
+        }
+    }
+}
+
+impl From<Auth> for bolide_rfb::AuthMode {
+    fn from(auth: Auth) -> bolide_rfb::AuthMode {
+        match auth {
+            Auth::Auto => bolide_rfb::AuthMode::Auto,
+            Auth::Ard => bolide_rfb::AuthMode::Ard,
+            Auth::Vnc => bolide_rfb::AuthMode::Vnc,
         }
     }
 }

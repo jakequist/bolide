@@ -9,6 +9,7 @@ mod common;
 use std::time::Duration;
 
 use bolide_rfb::proto::{self, PixelFormat};
+use bolide_rfb::{ard, Config, Session};
 use bolide_testkit::{ClientEvent, Encoding, FakeServer, Screen, Security, ZrleTiling};
 use common::{Client, ServerMessage};
 
@@ -126,6 +127,121 @@ async fn always_fail_rejects_whatever_the_client_sends() {
     assert_ne!(client.security_result().await, proto::SECURITY_RESULT_OK);
     assert!(!client.failure_reason().await.is_empty());
 
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn apple_auth_offers_a_dh_challenge_the_transform_satisfies() {
+    // A protocol-level check with the hand-written client: the fake offers type 30,
+    // sends a well-formed Diffie-Hellman challenge, and accepts a response built from
+    // the shared `bolide_rfb::ard` transform. This proves the *wire*, not bolide's
+    // client against itself.
+    let server = FakeServer::builder()
+        .ard("meteor", "meteor")
+        .start()
+        .await
+        .unwrap();
+    let mut client = Client::connect(server.addr()).await;
+
+    client.version().await;
+    assert_eq!(client.security_types().await, vec![proto::SECURITY_ARD]);
+    client.send(&[proto::SECURITY_ARD]).await;
+
+    let generator = u16::from_be_bytes(client.read_n(2).await.try_into().unwrap());
+    let key_len = u16::from_be_bytes(client.read_n(2).await.try_into().unwrap()) as usize;
+    assert!((ard::MIN_KEY_LEN..=ard::MAX_KEY_LEN).contains(&key_len));
+    let prime = client.read_n(key_len).await;
+    let server_public = client.read_n(key_len).await;
+
+    let private = vec![0x11u8; key_len * 2];
+    let filler = [0u8; ard::CREDENTIAL_LEN];
+    let payload = ard::client_response(
+        u32::from(generator),
+        &prime,
+        &server_public,
+        "meteor",
+        "meteor",
+        &private,
+        &filler,
+    )
+    .expect("a valid key length");
+    client.send(&payload).await;
+
+    assert_eq!(client.security_result().await, proto::SECURITY_RESULT_OK);
+    // The session continues: a wrong transform would have failed the result.
+    assert_eq!(client.init().await.name, "bolide-testkit");
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn apple_auth_connects_as_the_named_user() {
+    // End to end through bolide's real client: a username and password drive the whole
+    // type-30 exchange (including the system RNG) and reach ServerInit.
+    let server = FakeServer::builder()
+        .ard("meteor", "meteor")
+        .desktop_name("tokyo")
+        .start()
+        .await
+        .unwrap();
+    let config = Config {
+        username: Some("meteor".into()),
+        password: Some("meteor".into()),
+        ..Config::default()
+    };
+    let session = bolide_rfb::connect(&server.addr().to_string(), config)
+        .await
+        .expect("Apple auth should connect");
+    assert_eq!(session.desktop_name(), "tokyo");
+
+    session.close().await.ok();
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn apple_auth_rejects_a_wrong_password() {
+    let server = FakeServer::builder()
+        .ard("meteor", "meteor")
+        .start()
+        .await
+        .unwrap();
+    let config = Config {
+        username: Some("meteor".into()),
+        password: Some("not-the-password".into()),
+        ..Config::default()
+    };
+    let err = match bolide_rfb::connect(&server.addr().to_string(), config).await {
+        Ok(_) => panic!("a wrong password must fail"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(err, bolide_rfb::Error::AuthFailed(_)),
+        "expected AuthFailed, got {err:?}"
+    );
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn apple_auth_without_a_username_is_refused_before_the_wire() {
+    // Forcing ARD with no username fails locally, before any credential leaves bolide.
+    let server = FakeServer::builder()
+        .ard("meteor", "meteor")
+        .start()
+        .await
+        .unwrap();
+    let config = Config {
+        username: None,
+        password: Some("meteor".into()),
+        auth: bolide_rfb::AuthMode::Ard,
+        ..Config::default()
+    };
+    let err = match bolide_rfb::connect(&server.addr().to_string(), config).await {
+        Ok(_) => panic!("ARD without a username must fail"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(err, bolide_rfb::Error::UsernameRequired),
+        "expected UsernameRequired, got {err:?}"
+    );
     server.shutdown().await;
 }
 

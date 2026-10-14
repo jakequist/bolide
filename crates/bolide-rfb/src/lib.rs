@@ -40,6 +40,7 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::broadcast;
 
+pub mod ard;
 pub mod keysym;
 pub mod proto;
 
@@ -161,6 +162,11 @@ pub enum Error {
     /// password, that one by supplying a *different* one, and a CLI should say which.
     #[error("this desktop requires a password (VNC authentication)")]
     PasswordRequired,
+    /// Apple authentication (type 30) was selected but no username was supplied. Apple's
+    /// credential block carries a username, so it is how a connection names *which* user
+    /// it is — without one there is nobody to log in as.
+    #[error("Apple authentication (type 30) needs a username")]
+    UsernameRequired,
     /// The server rejected the credentials.
     #[error("authentication failed: {0}")]
     AuthFailed(String),
@@ -196,6 +202,25 @@ impl Error {
 /// `Result` with this crate's [`Error`].
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Which RFB security type to prefer when the server offers a choice.
+///
+/// The choice matters on macOS: Apple's type 30 carries a **username**, so it
+/// authenticates *as a named user* and can reach a Mac sitting at its login window;
+/// classic VNC auth (type 2) has only a password and authenticates to whatever shares
+/// the console. `Auto` picks type 30 when the server offers it and a username is set,
+/// and the two force values exist so a caller can pin either.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AuthMode {
+    /// Apple type 30 when offered and a username is set, else classic VNC auth, else
+    /// `None`.
+    #[default]
+    Auto,
+    /// Force Apple Remote Desktop authentication (type 30).
+    Ard,
+    /// Force classic VNC authentication (type 2).
+    Vnc,
+}
+
 /// How to connect.
 ///
 /// `Debug` redacts the password. That is not politeness: a `Config` reaches a
@@ -217,6 +242,8 @@ pub struct Config {
     /// Keep asking for incremental updates so the framebuffer stays current without a
     /// caller having to ask. Default `true`.
     pub continuous: bool,
+    /// Which security type to prefer. Default [`AuthMode::Auto`].
+    pub auth: AuthMode,
 }
 
 impl Default for Config {
@@ -227,6 +254,7 @@ impl Default for Config {
             shared: true,
             timeout: Duration::from_secs(10),
             continuous: true,
+            auth: AuthMode::default(),
         }
     }
 }
@@ -253,6 +281,7 @@ impl fmt::Debug for Config {
             .field("shared", &self.shared)
             .field("timeout", &self.timeout)
             .field("continuous", &self.continuous)
+            .field("auth", &self.auth)
             .finish()
     }
 }

@@ -115,11 +115,35 @@ Then `bolide screenshot --out /tmp/s.png` and look at it.
 | `bolide --version` | the installed version |
 
 `connect` options: `--username U`, `--password PW`, `--password-file F` (or the
-`BOLIDE_PASSWORD` environment variable), `--listen ADDR`, `--token T`, `--foreground`,
-and the timing knobs `--drag-steps N`, `--drag-step-ms MS`, `--drag-dwell-ms MS` (how a
-drag walks) and `--settle-ms MS` (how long a screenshot after input lets the app redraw).
-Credentials can also ride in the URL: `vnc://jake:pw@mac01.local` (percent-encode an `@`,
-`:` or `%` in them).
+`BOLIDE_PASSWORD` environment variable), `--auth auto|ard|vnc`, `--listen ADDR`,
+`--token T`, `--foreground`, and the timing knobs `--drag-steps N`, `--drag-step-ms MS`,
+`--drag-dwell-ms MS` (how a drag walks) and `--settle-ms MS` (how long a screenshot
+after input lets the app redraw). Credentials can also ride in the URL:
+`vnc://jake:pw@mac01.local` (percent-encode an `@`, `:` or `%` in them).
+
+## Authentication, and logging in as yourself on a Mac
+
+bolide speaks three RFB security types: `None`, classic VNC auth (type 2), and **Apple
+Remote Desktop (type 30)** — the Diffie-Hellman username/password exchange every macOS
+Screen Sharing server offers. Which one it uses is `--auth`:
+
+- `auto` (the default) picks type 30 when the server offers it **and** a `--username` is
+  set, otherwise classic VNC auth, otherwise `None`.
+- `ard` forces type 30; `vnc` forces classic VNC auth.
+
+The difference matters on macOS. Classic VNC auth carries a **password only**, so it
+authenticates to whatever shares the physical console — connect to a Mac somebody is
+sitting at and you get *their* screen. Apple's type 30 carries a **username**, so it
+logs in **as that user**: it reaches a Mac sitting at its login window, and names which
+account the session belongs to.
+
+```console
+$ bolide connect vnc://mac01.local --username meteor --password meteor --auth ard
+```
+
+Newer macOS also offers SRP/RSA variants (types 33, 35, 36) and a post-authentication
+*session-select* exchange (the "Share screen / Log in as yourself" picker in Apple's own
+viewer). bolide implements neither yet; see [docs/protocol.md](docs/protocol.md).
 
 ## Passwords
 
@@ -153,9 +177,10 @@ exposes it wherever you say, and `--token` adds a bearer check.
 
 ## What v0 does not do
 
-- No TLS, no VeNCrypt, no Apple ARD authentication (security types `None` and classic
-  VNC auth only). bolide is meant to be pointed at a desktop you can already reach —
-  over a tailnet, a VPN or an SSH tunnel.
+- No TLS and no VeNCrypt. Authentication is `None`, classic VNC auth, or Apple's type 30
+  (see above); the newer Apple SRP/RSA types (33, 35, 36) and the session-select
+  exchange are not implemented. bolide is meant to be pointed at a desktop you can
+  already reach — over a tailnet, a VPN or an SSH tunnel.
 - No video or streaming endpoint; screenshots are pull-only.
 - No horizontal scrolling (RFB's wheel is buttons 4 and 5, and nothing else is
   standard), no `hold_key`, no `left_mouse_down`/`up`.
@@ -187,7 +212,7 @@ for every push to `main` and every pull request.
 
 | crate | what |
 |---|---|
-| `bolide-rfb` | the RFB 3.8 client: handshake, VNC auth, Raw/CopyRect/ZRLE, keysyms |
+| `bolide-rfb` | the RFB 3.8 client: handshake, VNC + Apple (type 30) auth, Raw/CopyRect/ZRLE, keysyms |
 | `bolide-testkit` | an in-process fake RFB server — every test runs offline |
 | `bolide-server` | the loopback HTTP server |
 | `bolide-cli` | the `bolide` binary |

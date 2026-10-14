@@ -48,6 +48,8 @@ fn the_child_is_re_execed_with_foreground() {
         vec![
             "connect",
             "vnc://mac01.local:5900",
+            "--auth",
+            "auto",
             "--listen",
             "127.0.0.1:0",
             "--foreground"
@@ -86,6 +88,8 @@ fn the_child_keeps_every_non_secret_option() {
             "jake",
             "--password-file",
             "/tmp/p",
+            "--auth",
+            "auto",
             "--listen",
             "127.0.0.1:53211",
             "--token",

@@ -384,6 +384,7 @@ async fn serve_foreground(
     let config = bolide_rfb::Config {
         username: creds.username.clone(),
         password,
+        auth: args.auth.into(),
         ..Default::default()
     };
 

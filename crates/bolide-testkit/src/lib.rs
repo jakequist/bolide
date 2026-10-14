@@ -126,6 +126,14 @@ pub enum Security {
     None,
     /// Offer `VncAuth` only, and accept exactly this password.
     VncAuth(String),
+    /// Offer Apple Remote Desktop (type 30) only, and accept exactly this username and
+    /// password through the Diffie-Hellman credential exchange.
+    Ard {
+        /// The username the credential block must carry.
+        username: String,
+        /// The password the credential block must carry.
+        password: String,
+    },
     /// Offer `VncAuth` and fail the SecurityResult whatever the client sends.
     AlwaysFail,
     /// Offer a security list the client cannot use (so its error path is reachable).

@@ -61,6 +61,8 @@ pub fn child_args(args: &ConnectArgs, target: &Target, creds: &Credentials) -> V
         out.push("--password-file".to_string());
         out.push(file.display().to_string());
     }
+    out.push("--auth".to_string());
+    out.push(args.auth.as_str().to_string());
     out.push("--listen".to_string());
     out.push(args.listen.to_string());
     if let Some(token) = &args.token {
