@@ -6,7 +6,7 @@
 //! - **Every click is `move → press → release`**, three PointerEvents, in that order.
 //!   RFB has no "click at (x, y)": a press carries whatever position it carries, so a
 //!   press sent before the pointer has arrived clicks the *previous* location. This is
-//!   the single most common way a VNC automation misfires.
+//!   the single most common way a VNC action misfires.
 //! - **`double_click` / `triple_click`** are one move followed by two/three
 //!   press+release pairs — not two/three independent clicks, because re-sending the
 //!   move between them is harmless but re-deriving the position is not.
