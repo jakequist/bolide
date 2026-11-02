@@ -5,20 +5,40 @@
 mod common;
 mod ffmpeg;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use bolide_cli::{state, state_dir_for, THIS_PLATFORM};
 use bolide_testkit::{FakeServer, Screen};
 
 use common::TempDir;
+
+/// The state-directory variables each `bolide` here runs with.
+fn state_env(home: &Path) -> [(&'static str, PathBuf); 2] {
+    [
+        ("HOME", home.to_path_buf()),
+        ("XDG_STATE_HOME", home.join("state")),
+    ]
+}
+
+/// Where the daemon's log lands under `state_env(home)`, asked of bolide itself: macOS
+/// keeps state under `~/Library/Application Support` and ignores `XDG_STATE_HOME`.
+fn daemon_log(home: &Path) -> PathBuf {
+    let env = state_env(home);
+    let lookup = |key: &str| {
+        env.iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, v)| v.to_string_lossy().into_owned())
+    };
+    state::log_path(&state_dir_for(THIS_PLATFORM, &lookup).expect("a state directory"))
+}
 
 fn bolide(home: &Path, path: Option<&std::ffi::OsStr>, args: &[&str]) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_bolide"));
     command
         .args(args)
         .current_dir(home)
-        .env("HOME", home)
-        .env("XDG_STATE_HOME", home.join("state"))
+        .envs(state_env(home))
         .env_remove("BOLIDE_PASSWORD");
     if let Some(path) = path {
         command.env("PATH", path);
@@ -63,8 +83,7 @@ async fn disconnect_leaves_a_finished_recording() {
         text(&disconnected)
     );
 
-    let log = std::fs::read_to_string(home.path().join("state/bolide/bolide.log"))
-        .expect("the daemon's log");
+    let log = std::fs::read_to_string(daemon_log(home.path())).expect("the daemon's log");
     assert!(
         log.contains("recording to ") && log.contains("frames to "),
         "the daemon did not say it finalised the recording:\n{log}"
@@ -109,7 +128,7 @@ fn without_ffmpeg_connect_stops_before_it_starts() {
         "{said}"
     );
     assert!(
-        !home.path().join("state/bolide/bolide.log").exists(),
+        !daemon_log(home.path()).exists(),
         "it started a daemon anyway"
     );
 }
