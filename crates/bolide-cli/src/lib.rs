@@ -98,6 +98,7 @@ pub mod api;
 pub mod cli;
 pub mod daemon;
 pub mod error;
+pub mod record;
 pub mod run;
 pub mod state;
 pub mod update;
