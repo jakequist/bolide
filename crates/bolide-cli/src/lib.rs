@@ -5,7 +5,7 @@
 //! ```text
 //! bolide connect vnc://[USER[:PASSWORD]@]HOST[:PORT] [--username U]
 //!                [--password PW | --password-file F] [--listen ADDR] [--token T]
-//!                [--foreground]
+//!                [--record FILE.mp4|FILE.webm] [--foreground]
 //! bolide status
 //! bolide disconnect
 //! bolide screenshot [--out FILE.png | --out -]

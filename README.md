@@ -116,10 +116,30 @@ Then `bolide screenshot --out /tmp/s.png` and look at it.
 
 `connect` options: `--username U`, `--password PW`, `--password-file F` (or the
 `BOLIDE_PASSWORD` environment variable), `--auth auto|ard|vnc`, `--listen ADDR`,
-`--token T`, `--foreground`, and the timing knobs `--drag-steps N`, `--drag-step-ms MS`,
-`--drag-dwell-ms MS` (how a drag walks) and `--settle-ms MS` (how long a screenshot
-after input lets the app redraw). Credentials can also ride in the URL:
-`vnc://jake:pw@mac01.local` (percent-encode an `@`, `:` or `%` in them).
+`--token T`, `--foreground`, `--record FILE` (below), and the timing knobs
+`--drag-steps N`, `--drag-step-ms MS`, `--drag-dwell-ms MS` (how a drag walks) and
+`--settle-ms MS` (how long a screenshot after input lets the app redraw). Credentials
+can also ride in the URL: `vnc://jake:pw@mac01.local` (percent-encode an `@`, `:` or `%`
+in them).
+
+## Recording a session
+
+`bolide connect vnc://HOST --record run.mp4` records the desktop for the whole session,
+to a `.mp4` (H.264) or a `.webm` (VP8); the extension decides, and any other is a usage
+error. It needs `ffmpeg` on PATH, and `connect` says so before it starts anything if there
+is none. The recording starts with the session and is finalised when it ends: `bolide
+disconnect`, Ctrl-C under `--foreground`, or the desktop going away. ffmpeg runs in a
+process group of its own, so a Ctrl-C at the terminal reaches bolide, which then closes
+the video properly.
+
+- The video samples the framebuffer at 10 frames a second, repeating the last frame while
+  nothing changes, so its length is the session's.
+- Its size is the desktop's at connect, rounded up to even (H.264 cannot encode an odd
+  side; the extra column or row is black). A desktop that resizes later is fitted into
+  that size: centred unscaled if it fits, scaled down with its aspect kept if it does not.
+- Until the desktop's first update arrives the framebuffer is black, and so is the video.
+- The MP4 is fragmented, with a keyframe every two seconds, so a file cut off by a crash
+  still plays up to its last two seconds. An existing file is overwritten.
 
 ## Authentication, and logging in as yourself on a Mac
 
@@ -181,7 +201,8 @@ exposes it wherever you say, and `--token` adds a bearer check.
   (see above); the newer Apple SRP/RSA types (33, 35, 36) and the session-select
   exchange are not implemented. bolide is meant to be pointed at a desktop you can
   already reach — over a tailnet, a VPN or an SSH tunnel.
-- No video or streaming endpoint; screenshots are pull-only.
+- No video or streaming endpoint; screenshots are pull-only. (`connect --record` writes
+  the session to a local video file; nothing streams it.)
 - No horizontal scrolling (RFB's wheel is buttons 4 and 5, and nothing else is
   standard), no `hold_key`, no `left_mouse_down`/`up`.
 - Clipboard is latin-1, per baseline RFB; the Extended Clipboard pseudo-encoding is not

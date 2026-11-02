@@ -262,3 +262,25 @@ fn the_log_tail_is_the_last_few_lines_and_nothing_else() {
 
     assert_eq!(daemon::log_tail(&dir.path().join("missing.log"), 3), "");
 }
+
+#[test]
+fn a_recording_reaches_the_child_as_an_absolute_path() {
+    // The daemon is a separate process that may not share our idea of `.`, so a
+    // relative --record is resolved here, against the directory it was typed in.
+    let cwd = std::env::current_dir().unwrap();
+    let child = child_of(&["connect", "vnc://h", "--record", "out/run.mp4"]);
+    let at = child
+        .iter()
+        .position(|a| a == "--record")
+        .expect("--record is passed on");
+    assert_eq!(child[at + 1], cwd.join("out/run.mp4").display().to_string());
+    assert_eq!(child.last().map(String::as_str), Some("--foreground"));
+
+    let child = child_of(&["connect", "vnc://h", "--record", "/srv/runs/a.webm"]);
+    assert!(
+        child
+            .windows(2)
+            .any(|w| w == ["--record", "/srv/runs/a.webm"]),
+        "{child:?}"
+    );
+}

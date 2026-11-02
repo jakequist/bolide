@@ -84,6 +84,30 @@ fn drag_pacing_flags_override_only_what_they_name() {
 }
 
 #[test]
+fn connect_records_to_a_file_only_when_asked() {
+    assert_eq!(connect_args(&["connect", "vnc://h"]).record, None);
+    assert_eq!(
+        connect_args(&["connect", "vnc://h", "--record", "out/run.mp4"]).record,
+        Some(PathBuf::from("out/run.mp4"))
+    );
+    assert_eq!(
+        connect_args(&["connect", "vnc://h", "--record=run.webm"]).record,
+        Some(PathBuf::from("run.webm"))
+    );
+}
+
+#[test]
+fn a_recording_that_is_neither_mp4_nor_webm_is_a_usage_error() {
+    let err = parse_args(&args(&["connect", "vnc://h", "--record", "run.avi"])).unwrap_err();
+    assert_eq!(err.code, EXIT_USAGE);
+    assert!(
+        err.message.contains(".mp4") && err.message.contains(".webm"),
+        "{}",
+        err.message
+    );
+}
+
+#[test]
 fn settle_ms_overrides_the_wait_before_a_screenshot_that_follows_input() {
     assert_eq!(
         connect_args(&["connect", "vnc://h"]).input_settle(),

@@ -23,10 +23,16 @@ use std::ffi::{OsStr, OsString};
 use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Duration;
 
 use bolide_rfb::{Framebuffer, ServerEvent, Session};
+use tokio::io::AsyncWriteExt;
+use tokio::process::{Child, ChildStdin};
 use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
 
 use crate::error::CliError;
 
@@ -307,6 +313,125 @@ async fn write_one<S: FrameSink>(
         .await
         .map_err(|e| io::Error::other(e.to_string()))?;
     sink.write_frame(&fit(&frame, canvas)).await
+}
+
+/// Frames into an `ffmpeg` child's stdin.
+///
+/// The child is in a **process group of its own**, so a Ctrl-C at the terminal reaches
+/// bolide and not ffmpeg: bolide then closes ffmpeg's stdin and waits for it, and that
+/// is what writes a finished file. Were ffmpeg to get the SIGINT too, it would stop
+/// mid-stream. The child is not killed when the sink is dropped: if bolide itself dies,
+/// the pipe closes, and ffmpeg finalises what it has.
+pub struct FfmpegSink {
+    child: Child,
+    stdin: Option<ChildStdin>,
+}
+
+impl FfmpegSink {
+    /// Start `program` (normally `ffmpeg`) encoding into `out`. Its stderr is bolide's,
+    /// so in a daemon what ffmpeg complains about lands in `bolide.log`.
+    pub fn spawn(
+        program: &Path,
+        container: Container,
+        geometry: Geometry,
+        fps: u32,
+        out: &Path,
+    ) -> io::Result<FfmpegSink> {
+        let mut child = tokio::process::Command::new(program)
+            .args(ffmpeg_args(container, geometry, fps, out))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .process_group(0)
+            .spawn()?;
+        let stdin = child.stdin.take();
+        Ok(FfmpegSink { child, stdin })
+    }
+}
+
+impl FrameSink for FfmpegSink {
+    async fn write_frame(&mut self, rgba: &[u8]) -> io::Result<()> {
+        match self.stdin.as_mut() {
+            Some(stdin) => stdin.write_all(rgba).await,
+            None => Err(io::Error::from(io::ErrorKind::BrokenPipe)),
+        }
+    }
+
+    async fn finish(mut self) -> io::Result<()> {
+        // End of input is how ffmpeg is told to write the trailer.
+        drop(self.stdin.take());
+        let status = self.child.wait().await?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(io::Error::other(format!("ffmpeg {status}")))
+        }
+    }
+}
+
+/// A [`Ticker`] at a fixed rate. The first tick is at once, so a recording begins with
+/// the session. Ticks missed while a frame was being written are made up at once
+/// rather than dropped, so the video's length stays the session's.
+pub struct IntervalTicker(tokio::time::Interval);
+
+impl IntervalTicker {
+    /// `fps` ticks a second.
+    pub fn new(fps: u32) -> IntervalTicker {
+        let period = Duration::from_secs(1) / fps.max(1);
+        IntervalTicker(tokio::time::interval(period))
+    }
+}
+
+impl Ticker for IntervalTicker {
+    async fn tick(&mut self) -> bool {
+        self.0.tick().await;
+        true
+    }
+}
+
+/// A recording in progress: [`record`] on its own task, into `ffmpeg`, at [`FPS`].
+pub struct Recording {
+    stop: oneshot::Sender<()>,
+    task: JoinHandle<io::Result<u64>>,
+    path: PathBuf,
+}
+
+impl Recording {
+    /// Start recording `session` into `path`, a `.mp4` or `.webm`, at the session's
+    /// current size.
+    pub fn start(session: Arc<dyn Session>, path: &Path) -> io::Result<Recording> {
+        let container = Container::for_path(path).map_err(io::Error::other)?;
+        let (width, height) = session.size();
+        let canvas = Geometry::for_screen(width, height);
+        let sink = FfmpegSink::spawn(Path::new("ffmpeg"), container, canvas, FPS, path)?;
+        let (stop, stopped) = oneshot::channel::<()>();
+        let task = tokio::spawn(record(
+            session,
+            canvas,
+            IntervalTicker::new(FPS),
+            sink,
+            async {
+                // A dropped sender stops it too.
+                let _ = stopped.await;
+            },
+        ));
+        Ok(Recording {
+            stop,
+            task,
+            path: path.to_path_buf(),
+        })
+    }
+
+    /// The file being written.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Stop, and wait until the file is finalised. Returns the frames written.
+    pub async fn finish(self) -> io::Result<u64> {
+        let _ = self.stop.send(());
+        self.task.await.map_err(io::Error::other)?
+    }
 }
 
 #[cfg(test)]

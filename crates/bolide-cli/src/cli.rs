@@ -179,6 +179,14 @@ pub struct ConnectArgs {
     /// of it is waited; 0 turns it off.
     #[arg(long, value_name = "MS")]
     pub settle_ms: Option<u64>,
+    /// Record the session's desktop to FILE, a `.mp4` (H.264) or `.webm` (VP8).
+    ///
+    /// Recording starts with the session and is finalised when it ends — `bolide
+    /// disconnect`, Ctrl-C or the desktop going away. The video is the desktop's size at
+    /// connect, at 10 frames a second; a later resize is fitted into it. An existing
+    /// FILE is overwritten. Needs `ffmpeg` on PATH.
+    #[arg(long, value_name = "FILE", value_parser = crate::record::parse_record_path)]
+    pub record: Option<PathBuf>,
     /// Stay attached instead of daemonising.
     #[arg(long)]
     pub foreground: bool,

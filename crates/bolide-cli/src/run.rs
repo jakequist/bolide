@@ -18,6 +18,7 @@ use crate::api::{self, Client};
 use crate::cli::{Cli, ClipboardCommand, Command, ConnectArgs, Credentials, Target};
 use crate::daemon;
 use crate::error::{CliError, Stream, EXIT_OK};
+use crate::record;
 use crate::state::{self, SessionState};
 
 /// The environment variable a password may arrive in.
@@ -317,6 +318,9 @@ async fn connect(args: ConnectArgs) -> Result<(), CliError> {
             existing.remote, existing.pid
         )));
     }
+    if args.record.is_some() {
+        record::require_ffmpeg(std::env::var_os("PATH").as_deref())?;
+    }
 
     if args.foreground {
         serve_foreground(target, creds, args, &dir).await
@@ -397,6 +401,15 @@ async fn serve_foreground(
     let desktop_name = session.desktop_name();
     let session: Arc<dyn bolide_rfb::Session> = Arc::new(session);
 
+    let recording = match &args.record {
+        Some(path) => Some(
+            record::Recording::start(Arc::clone(&session), path).map_err(|e| {
+                CliError::failure(format!("cannot record to {}: {e}", path.display()))
+            })?,
+        ),
+        None => None,
+    };
+
     let running = bolide_server::serve(
         Arc::clone(&session),
         bolide_server::ServerConfig {
@@ -425,10 +438,21 @@ async fn serve_foreground(
 
     println!("connected to {remote} ({width}x{height}, {desktop_name:?})");
     println!("computer-use on {endpoint}");
+    if let Some(recording) = &recording {
+        println!("recording to {}", recording.path().display());
+    }
     let _ = std::io::stdout().flush();
 
     wait_for_the_end(Arc::clone(&session)).await;
 
+    // Before anything else is torn down: finalising is what makes the file a video.
+    if let Some(recording) = recording {
+        let path = recording.path().display().to_string();
+        match recording.finish().await {
+            Ok(frames) => eprintln!("recorded {frames} frames to {path}"),
+            Err(e) => eprintln!("the recording to {path} did not finish cleanly: {e}"),
+        }
+    }
     running.shutdown().await;
     let _ = session.close().await;
     let _ = state::clear_in(dir);

@@ -155,6 +155,15 @@ environment (`BOLIDE_PASSWORD`), because the daemon lives for hours and argv is 
 treated as absent and replaced, so a crashed daemon does not leave every later command
 timing out against a dead port.
 
+`connect --record FILE` is passed to the daemon as an absolute path, so the file lands
+where the user's shell meant. The recorder (`bolide_cli::record`) is a task beside the
+HTTP server: on each tick of a fixed-rate `Ticker` it copies the framebuffer, fitted to
+the video's size, into a `FrameSink`, which in a session is `ffmpeg` reading raw RGBA on
+its stdin. When the session ends, the recorder is finished *first*: ffmpeg's stdin is
+closed and bolide waits for it to write the file, and only then is the server shut down.
+Both seams are traits, so the tests drive the recorder with a ticker and a sink they
+control, against the in-process RFB server.
+
 ## Portability
 
 Linux and macOS, from one source tree. The only platform-specific decision is where

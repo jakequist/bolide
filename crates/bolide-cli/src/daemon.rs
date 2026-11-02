@@ -80,6 +80,15 @@ pub fn child_args(args: &ConnectArgs, target: &Target, creds: &Credentials) -> V
             out.push(value.to_string());
         }
     }
+    if let Some(record) = &args.record {
+        // Absolute, so the file lands where the user's shell meant it to whatever the
+        // daemon's working directory is. `absolute` only fails for an empty path (which
+        // the value parser has already refused) or an unreadable cwd; either way the
+        // path as typed is the best there is.
+        let record = std::path::absolute(record).unwrap_or_else(|_| record.clone());
+        out.push("--record".to_string());
+        out.push(record.display().to_string());
+    }
     out.push("--foreground".to_string());
     out
 }
