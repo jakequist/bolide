@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# The gate: the checks .github/workflows/ci.yml runs, in its order, stopping on the first
+# failure. CLAUDE.md's "The gate" names the three cargo checks; CI adds install.sh's.
+#
+#   scripts/gate
+#
+# shellcheck runs on Linux only, as in CI, and must be installed there.
+set -euo pipefail
+
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
+
+step() {
+  printf '\n==> %s\n' "$*"
+  "$@"
+}
+
+step cargo fmt --all --check
+step cargo clippy --workspace --all-targets -- -D warnings
+step cargo test --workspace
+step sh -n install.sh
+if [ "$(uname -s)" = Linux ]; then
+  if ! command -v shellcheck >/dev/null; then
+    echo "gate: shellcheck is not installed; CI runs it on Linux" >&2
+    exit 1
+  fi
+  step shellcheck install.sh scripts/install-selftest.sh
+fi
+step bash scripts/install-selftest.sh
+
+printf '\ngate: all checks passed\n'
