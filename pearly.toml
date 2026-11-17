@@ -1,0 +1,127 @@
+# meteor/bolide's gates for pearly: scripts/gate, split into gates that run side by side.
+#
+# scripts/gate runs fmt --check, clippy --workspace --all-targets -D warnings, test --workspace,
+# then install.sh's checks (sh -n, shellcheck, the selftest), stopping at the first failure.
+# Here the cargo ones are gates of their own, after one toolchain gate, and install.sh's checks
+# a gate beside them, so a check reports every failure at once, and the gate cache keeps each
+# pass apart. Gitea Actions is off on this repo: pearly is its only CI, so a gate that cannot
+# run fails, never skips.
+#
+# pearly's runner images carry no Rust, so the toolchain gate installs rustup into the gate
+# user's home when cargo is missing, and cargo installs the channel rust-toolchain.toml pins. A
+# warm VM's image keeps ~/.rustup, ~/.cargo and the target dir, so it skips all of that.
+
+version = 1
+
+# CARGO_INCREMENTAL: a check's checkout is fresh, and incremental state is most of target/.
+# CARGO_NET_RETRY lifts cargo's 3 retries of a registry fault; the RUSTUP_ ones bound rustup's
+# 180 s stalls on a toolchain download.
+[env]
+CI = 'true'
+CARGO_INCREMENTAL = '0'
+CARGO_NET_RETRY = '10'
+RUSTUP_DOWNLOAD_TIMEOUT = '20'
+RUSTUP_MAX_RETRIES = '10'
+
+# A warm sandbox, grown from main by the warm-promote idle job.
+[check]
+provider = 'warm'
+
+[[gate]]
+id = 'rust-toolchain'
+timeout_secs = 900
+run = '''
+set -e
+export PATH="$HOME/.cargo/bin:$PATH"
+if ! command -v cargo >/dev/null; then
+  tmp=$(mktemp -d)
+  trap 'rm -rf "$tmp"' EXIT
+  printf '%s\n' 'connect-timeout = 15' 'max-time = 120' 'retry = 5' 'retry-all-errors' >"$tmp/.curlrc"
+  export CURL_HOME="$tmp"
+  curl --proto '=https' --tlsv1.2 -fsSL -o "$tmp/rustup-init.sh" https://sh.rustup.rs
+  sh "$tmp/rustup-init.sh" -y --no-modify-path --profile minimal --default-toolchain none
+  unset CURL_HOME
+fi
+cargo --version
+cargo fmt --version
+cargo clippy --version
+cargo fetch --locked
+'''
+
+[gate.inputs]
+files = ['rust-toolchain.toml', 'Cargo.lock']
+
+[[gate]]
+id = 'fmt'
+after = ['rust-toolchain']
+timeout_secs = 300
+run = 'export PATH="$HOME/.cargo/bin:$PATH" && cargo fmt --all --check'
+
+[gate.inputs]
+files = ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'rustfmt.toml', '.rustfmt.toml', 'crates/**']
+tools = ['cargo', 'rustc']
+
+[[gate]]
+id = 'clippy'
+after = ['rust-toolchain']
+timeout_secs = 1200
+run = 'export PATH="$HOME/.cargo/bin:$PATH" && cargo clippy --locked --workspace --all-targets -- -D warnings'
+
+[gate.inputs]
+files = ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'clippy.toml', '.clippy.toml', 'crates/**']
+env = ['CI', 'CARGO_INCREMENTAL']
+tools = ['cargo', 'rustc']
+
+[[gate]]
+id = 'test'
+adapter = 'cargo-test'
+after = ['rust-toolchain']
+timeout_secs = 1800
+run = 'export PATH="$HOME/.cargo/bin:$PATH" && cargo test --locked --workspace'
+
+[gate.inputs]
+files = ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'crates/**']
+env = ['CI', 'CARGO_INCREMENTAL']
+tools = ['cargo', 'rustc']
+
+# install.sh's checks, as scripts/gate runs them: it parses as sh, shellcheck passes on it and
+# on its selftest, and the selftest (a fake uname, sysctl and curl, and a python3 fixture server
+# on loopback: no network) passes. shellcheck, python3 and curl are in pearly's sandbox image
+# (infra/sandbox-image/build.sh); a box without shellcheck fails this gate, saying so, as
+# scripts/gate does. Each check runs even when one fails.
+[[gate]]
+id = 'install-sh'
+timeout_secs = 600
+run = '''
+failed=''
+printf '\n-- sh -n install.sh\n'
+sh -n install.sh || failed="$failed sh-n"
+printf '\n-- shellcheck\n'
+if command -v shellcheck >/dev/null; then
+  shellcheck install.sh scripts/install-selftest.sh || failed="$failed shellcheck"
+else
+  echo 'install-sh: shellcheck is not installed on this box' >&2
+  failed="$failed shellcheck(missing)"
+fi
+printf '\n-- scripts/install-selftest.sh\n'
+bash scripts/install-selftest.sh || failed="$failed selftest"
+if [ -n "$failed" ]; then
+  printf '\ninstall-sh: FAILED:%s\n' "$failed" >&2
+  exit 1
+fi
+'''
+
+[gate.inputs]
+files = ['install.sh', 'scripts/install-selftest.sh', '.shellcheckrc']
+tools = ['shellcheck', 'python3', 'curl', 'bash']
+
+# pearly's merge queue, live as for meteor/meteor: pearly-bot squash-merges what a batch passed,
+# with the merge-queue status, labels and comments. Batches of 6; a closing keyword refused; a
+# squash that reverts a main commit of the last 7 days bounced; one re-run of a red that is a
+# PR's alone, its failing gates only.
+[queue]
+batch = 6
+closing_keywords = true
+revert_guard_days = 7
+rerun = 'red-alone'
+mode = 'live'
