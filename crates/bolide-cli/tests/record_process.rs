@@ -262,7 +262,13 @@ async fn the_action_log_names_the_recording_it_goes_with() {
     let record = &lines[0]["record"];
     assert_eq!(
         record["file"],
-        serde_json::json!(home.path().join("run.mp4").display().to_string()),
+        // On macOS the temp dir is under /var, a symlink to /private/var; the
+        // child reports its working directory resolved, so compare canonically.
+        serde_json::json!(std::fs::canonicalize(home.path())
+            .unwrap()
+            .join("run.mp4")
+            .display()
+            .to_string()),
         "{log}"
     );
     assert_eq!(record["fps"], serde_json::json!(12), "{log}");
