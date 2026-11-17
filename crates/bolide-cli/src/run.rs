@@ -18,8 +18,8 @@ use crate::api::{self, Client};
 use crate::cli::{Cli, ClipboardCommand, Command, ConnectArgs, Credentials, Target};
 use crate::daemon;
 use crate::error::{CliError, Stream, EXIT_OK};
-use crate::record;
 use crate::state::{self, SessionState};
+use crate::{action_log, record};
 
 /// The environment variable a password may arrive in.
 pub const PASSWORD_ENV: &str = "BOLIDE_PASSWORD";
@@ -403,16 +403,45 @@ async fn serve_foreground(
         .await
         .map_err(|e| CliError::failure(format!("cannot connect to {remote}: {e}")))?;
 
+    let anchor = action_log::Anchor::now();
     let (width, height) = session.size();
     let desktop_name = session.desktop_name();
     let session: Arc<dyn bolide_rfb::Session> = Arc::new(session);
 
+    let log_file = match &args.action_log {
+        // Opened before the recording starts, so a log that cannot be is a connect that
+        // fails before ffmpeg is running.
+        Some(path) => Some((
+            path,
+            std::fs::File::create(path).map_err(|e| action_log_failure(path, e))?,
+        )),
+        None => None,
+    };
     let recording = match &args.record {
         Some(path) => Some(
-            record::Recording::start(Arc::clone(&session), path).map_err(|e| {
+            record::Recording::start(Arc::clone(&session), path, args.record_fps).map_err(|e| {
                 CliError::failure(format!("cannot record to {}: {e}", path.display()))
             })?,
         ),
+        None => None,
+    };
+    let action_log = match log_file {
+        Some((path, file)) => {
+            let header = action_log::Header {
+                width,
+                height,
+                pointer: args.pointer,
+                recording: recording.as_ref().map(|r| action_log::RecordingInfo {
+                    file: r.path().to_path_buf(),
+                    fps: r.fps(),
+                    zero: r.zero(),
+                }),
+            };
+            Some(Arc::new(
+                action_log::ActionLogFile::new(file, path, &header, anchor)
+                    .map_err(|e| action_log_failure(path, e))?,
+            ))
+        }
         None => None,
     };
 
@@ -427,6 +456,9 @@ async fn serve_foreground(
             seed,
             drag: args.drag_pacing(),
             input_settle: args.input_settle(),
+            action_log: action_log
+                .clone()
+                .map(|log| log as Arc<dyn bolide_server::ActionLog>),
             ..Default::default()
         },
     )
@@ -451,6 +483,9 @@ async fn serve_foreground(
     if let Some(recording) = &recording {
         println!("recording to {}", recording.path().display());
     }
+    if let Some(log) = &action_log {
+        println!("action log to {}", log.path().display());
+    }
     let _ = std::io::stdout().flush();
 
     wait_for_the_end(Arc::clone(&session)).await;
@@ -464,9 +499,25 @@ async fn serve_foreground(
         }
     }
     running.shutdown().await;
+    if let Some(log) = &action_log {
+        let lost = log.lost();
+        if lost > 0 {
+            eprintln!(
+                "the action log {} lost {lost} lines it could not write",
+                log.path().display()
+            );
+        }
+    }
     let _ = session.close().await;
     let _ = state::clear_in(dir);
     Ok(())
+}
+
+fn action_log_failure(path: &Path, e: std::io::Error) -> CliError {
+    CliError::failure(format!(
+        "cannot write the action log to {}: {e}",
+        path.display()
+    ))
 }
 
 /// A humanized pointer's seed, so a session's movements can be replayed with `--seed`.

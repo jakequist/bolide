@@ -36,8 +36,14 @@ use tokio::task::JoinHandle;
 
 use crate::error::CliError;
 
-/// Frames per second a recording samples the framebuffer at.
-pub const FPS: u32 = 10;
+/// Frames per second a recording samples the framebuffer at, unless `--record-fps`
+/// says otherwise. A humanized pointer move has 30 to 60 positions; at 30 a video shows
+/// most of them.
+pub const DEFAULT_FPS: u32 = 30;
+
+/// The highest `--record-fps`. Each frame is a full copy of the framebuffer down a pipe,
+/// and a desktop updates no faster than its display.
+pub const MAX_FPS: u32 = 60;
 
 /// The container, and with it the codec, a recording is written in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,6 +77,17 @@ pub fn parse_record_path(value: &str) -> Result<PathBuf, String> {
     let path = PathBuf::from(value);
     Container::for_path(&path)?;
     Ok(path)
+}
+
+/// `--record-fps`'s value parser: a whole number of frames a second, 1 to [`MAX_FPS`].
+pub fn parse_fps(value: &str) -> Result<u32, String> {
+    match value.parse::<u32>() {
+        Ok(fps) if (1..=MAX_FPS).contains(&fps) => Ok(fps),
+        _ => Err(format!(
+            "--record-fps is frames a second, a whole number from 1 to {MAX_FPS}, and \
+             {value} is not"
+        )),
+    }
 }
 
 /// The video's frame size. Both sides are even, because H.264 in 4:2:0 cannot encode
@@ -375,10 +392,10 @@ impl FrameSink for FfmpegSink {
 pub struct IntervalTicker(tokio::time::Interval);
 
 impl IntervalTicker {
-    /// `fps` ticks a second.
-    pub fn new(fps: u32) -> IntervalTicker {
+    /// `fps` ticks a second, the first at `zero`.
+    pub fn starting_at(zero: std::time::Instant, fps: u32) -> IntervalTicker {
         let period = Duration::from_secs(1) / fps.max(1);
-        IntervalTicker(tokio::time::interval(period))
+        IntervalTicker(tokio::time::interval_at(zero.into(), period))
     }
 }
 
@@ -389,26 +406,30 @@ impl Ticker for IntervalTicker {
     }
 }
 
-/// A recording in progress: [`record`] on its own task, into `ffmpeg`, at [`FPS`].
+/// A recording in progress: [`record`] on its own task, into `ffmpeg`.
 pub struct Recording {
     stop: oneshot::Sender<()>,
     task: JoinHandle<io::Result<u64>>,
     path: PathBuf,
+    fps: u32,
+    zero: std::time::Instant,
 }
 
 impl Recording {
     /// Start recording `session` into `path`, a `.mp4` or `.webm`, at the session's
-    /// current size.
-    pub fn start(session: Arc<dyn Session>, path: &Path) -> io::Result<Recording> {
+    /// current size and `fps` frames a second.
+    pub fn start(session: Arc<dyn Session>, path: &Path, fps: u32) -> io::Result<Recording> {
         let container = Container::for_path(path).map_err(io::Error::other)?;
         let (width, height) = session.size();
         let canvas = Geometry::for_screen(width, height);
-        let sink = FfmpegSink::spawn(Path::new("ffmpeg"), container, canvas, FPS, path)?;
+        let sink = FfmpegSink::spawn(Path::new("ffmpeg"), container, canvas, fps, path)?;
         let (stop, stopped) = oneshot::channel::<()>();
+        // On tokio's clock, which is the server's, so an action log can count from it.
+        let zero = tokio::time::Instant::now().into_std();
         let task = tokio::spawn(record(
             session,
             canvas,
-            IntervalTicker::new(FPS),
+            IntervalTicker::starting_at(zero, fps),
             sink,
             async {
                 // A dropped sender stops it too.
@@ -419,12 +440,24 @@ impl Recording {
             stop,
             task,
             path: path.to_path_buf(),
+            fps,
+            zero,
         })
     }
 
     /// The file being written.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Its frames a second.
+    pub fn fps(&self) -> u32 {
+        self.fps
+    }
+
+    /// When the first frame is due: the video's time 0, on tokio's monotonic clock.
+    pub fn zero(&self) -> std::time::Instant {
+        self.zero
     }
 
     /// Stop, and wait until the file is finalised. Returns the frames written.
@@ -641,6 +674,24 @@ mod tests {
     }
 
     #[test]
+    fn the_rate_and_a_keyframe_every_two_seconds_follow_the_fps() {
+        for (fps, rate, gop) in [(30, "30", "60"), (60, "60", "120"), (1, "1", "2")] {
+            let args = ffmpeg_args(
+                Container::Mp4,
+                Geometry {
+                    width: 64,
+                    height: 48,
+                },
+                fps,
+                Path::new("x.mp4"),
+            );
+            let args = strings(&args);
+            assert!(args.windows(2).any(|w| w == ["-r", rate]), "{args:?}");
+            assert!(args.windows(2).any(|w| w == ["-g", gop]), "{args:?}");
+        }
+    }
+
+    #[test]
     fn webm_is_vp8() {
         let args = ffmpeg_args(
             Container::Webm,
@@ -685,6 +736,19 @@ mod tests {
                 "webm",
                 "run.webm",
             ]
+        );
+    }
+
+    /// Frame `k` of the video is the `k`th tick, due at `zero + k / fps`: so `zero` is
+    /// the video's time 0, which is what an action log's offsets count from.
+    #[tokio::test]
+    async fn the_ticks_are_due_from_the_instant_the_recording_counts_from() {
+        let zero = tokio::time::Instant::now().into_std();
+        let mut ticker = IntervalTicker::starting_at(zero, 50);
+        assert_eq!(ticker.0.tick().await.into_std(), zero);
+        assert_eq!(
+            ticker.0.tick().await.into_std(),
+            zero + Duration::from_millis(20)
         );
     }
 

@@ -283,6 +283,47 @@ fn the_pointer_mode_and_seed_reach_the_child() {
     assert!(!child.iter().any(|a| a == "--seed"), "{child:?}");
 }
 
+/// The daemon writes the action log where the user's shell meant: an absolute path.
+#[test]
+fn an_action_log_reaches_the_child_as_an_absolute_path() {
+    let flag = format!("--{}", bolide_cli::action_log::ACTION_LOG_FLAG);
+    let cwd = std::env::current_dir().unwrap();
+    let child = child_of(&["connect", "vnc://h", &flag, "logs/a.jsonl"]);
+    let at = child
+        .iter()
+        .position(|a| *a == flag)
+        .expect("the action log is passed on");
+    assert_eq!(
+        child[at + 1],
+        cwd.join("logs/a.jsonl").display().to_string()
+    );
+    assert_eq!(child.last().map(String::as_str), Some("--foreground"));
+
+    let child = child_of(&["connect", "vnc://h"]);
+    assert!(!child.contains(&flag), "{child:?}");
+}
+
+/// A rate other than the default reaches the daemon; the default adds nothing.
+#[test]
+fn a_recording_rate_reaches_the_child() {
+    let child = child_of(&[
+        "connect",
+        "vnc://h",
+        "--record",
+        "/r/a.mp4",
+        "--record-fps",
+        "12",
+    ]);
+    assert!(
+        child.windows(2).any(|w| w == ["--record-fps", "12"]),
+        "{child:?}"
+    );
+    assert_eq!(child.last().map(String::as_str), Some("--foreground"));
+
+    let child = child_of(&["connect", "vnc://h", "--record", "/r/a.mp4"]);
+    assert!(!child.iter().any(|a| a == "--record-fps"), "{child:?}");
+}
+
 #[test]
 fn a_recording_reaches_the_child_as_an_absolute_path() {
     // The daemon is a separate process that may not share our idea of `.`, so a

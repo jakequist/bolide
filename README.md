@@ -116,7 +116,8 @@ Then `bolide screenshot --out /tmp/s.png` and look at it.
 
 `connect` options: `--username U`, `--password PW`, `--password-file F` (or the
 `BOLIDE_PASSWORD` environment variable), `--auth auto|ard|vnc`, `--listen ADDR`,
-`--token T`, `--foreground`, `--record FILE` (below), `--pointer direct|humanized` and
+`--token T`, `--foreground`, `--record FILE`, `--record-fps N` and `--action-log FILE`
+(below), `--pointer direct|humanized` and
 `--seed N` (below), and the timing knobs `--drag-steps N`, `--drag-step-ms MS`,
 `--drag-dwell-ms MS` (how a direct drag walks) and `--settle-ms MS` (how long a
 screenshot after input lets the app redraw). Credentials can also ride in the URL:
@@ -158,14 +159,62 @@ disconnect`, Ctrl-C under `--foreground`, or the desktop going away. ffmpeg runs
 process group of its own, so a Ctrl-C at the terminal reaches bolide, which then closes
 the video properly.
 
-- The video samples the framebuffer at 10 frames a second, repeating the last frame while
-  nothing changes, so its length is the session's.
+- The video samples the framebuffer at 30 frames a second, repeating the last frame while
+  nothing changes, so its length is the session's. `--record-fps N` sets another rate,
+  from 1 to 60; anything else is a usage error. A humanized pointer move has 30 to 60
+  positions, and a lower rate shows only some of them.
 - Its size is the desktop's at connect, rounded up to even (H.264 cannot encode an odd
   side; the extra column or row is black). A desktop that resizes later is fitted into
   that size: centred unscaled if it fits, scaled down with its aspect kept if it does not.
 - Until the desktop's first update arrives the framebuffer is black, and so is the video.
 - The MP4 is fragmented, with a keyframe every two seconds, so a file cut off by a crash
   still plays up to its last two seconds. An existing file is overwritten.
+
+## Logging what was done
+
+`bolide connect vnc://HOST --action-log run.jsonl` writes a log of the session to
+`run.jsonl`, as JSON Lines: one line for each request the server handles, so another tool
+can find the stretches where nothing happened and cut them out of a recording. It works
+with or without `--record`. An existing file is overwritten.
+
+**The log holds typed text in full, passwords included.** A `type` action's text is
+written as it was sent, so keep the file as private as what was typed.
+
+The first line is a header:
+
+```json
+{"bolide":"0.2.0","desktop":{"width":1280,"height":800},"connected":"2026-11-17T10:00:00.120Z","record":{"file":"/runs/run.mp4","fps":30,"start":"2026-11-17T10:00:00.164Z"},"pointer":"humanized"}
+```
+
+`record` is `null` without `--record`. Then one line for each `/computer` action,
+`/screenshot`, and `/clipboard` read and write, as each is answered:
+
+```json
+{"seq":1,"action":"left_click","params":{"coordinate":[640,400]},"start":"2026-11-17T10:00:02.500Z","end":"2026-11-17T10:00:03.310Z","startS":2.336,"endS":3.146,"ok":true}
+{"seq":2,"action":"type","params":{"text":"hello\n"},"start":"2026-11-17T10:00:03.400Z","end":"2026-11-17T10:00:03.520Z","startS":3.236,"endS":3.356,"ok":true}
+{"seq":3,"action":"left_click","params":{"coordinate":[9000,1]},"start":"2026-11-17T10:00:04.000Z","end":"2026-11-17T10:00:04.000Z","startS":3.836,"endS":3.836,"ok":false,"error":"coordinate (9000, 1) is outside the 1280x800 screen"}
+```
+
+- `action` is the `/computer` action's name, or `screenshot`, `clipboard_get` or
+  `clipboard_set`. A `/computer` body with no action name to read is `computer`.
+- `params` is what was sent, less the action name: coordinates, text, keys, the
+  screenshot's query (`{"format":"json"}`). A body that is not a JSON object is
+  `{"body":"…"}`.
+- `start` and `end` are UTC, to the millisecond: when bolide began on the request and
+  when it had the answer. `startS` and `endS` are the same times in seconds from the
+  recording's first frame with `--record`, so they are positions in the video, and from
+  the connect without it. All of them come from one monotonic clock, so a wall clock
+  that is changed mid-session does not reorder them.
+- `ok` is `true`, or `false` with `error`, the message the caller was answered with.
+- `/status` and `/healthz` are not logged, nor is a request refused for its token.
+- Lines are written in the order requests are answered. A request that overlaps another
+  (a screenshot during a click) can start before the line above it ends.
+
+Each line is flushed as it is written, so a crash keeps every line before it. If a line
+cannot be written (a full disk), the request still goes through: the line is lost, the
+first loss is said in the daemon's log, `bolide.log`, and the count when the session
+ends. Lines keep their `seq` either way, so a gap in `seq` is where lines were lost. If
+the file cannot be created at connect, `connect` fails.
 
 ## Authentication, and logging in as yourself on a Mac
 

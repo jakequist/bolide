@@ -132,3 +132,162 @@ fn without_ffmpeg_connect_stops_before_it_starts() {
         "it started a daemon anyway"
     );
 }
+
+/// A directory holding an `ffmpeg` that writes its arguments, one a line, to the file
+/// `BOLIDE_TEST_FFMPEG_ARGS` names, then reads its stdin to the end and exits 0: what a
+/// session hands the encoder, without needing one. Returns a PATH with it first.
+fn fake_ffmpeg(home: &Path) -> std::ffi::OsString {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = home.join("fake-bin");
+    std::fs::create_dir_all(&dir).unwrap();
+    let script = dir.join("ffmpeg");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$BOLIDE_TEST_FFMPEG_ARGS\"\ncat > /dev/null\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut path = vec![dir];
+    path.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    std::env::join_paths(path).unwrap()
+}
+
+/// The arguments the fake ffmpeg was started with, after a session that recorded with
+/// `extra` on its `connect`.
+async fn ffmpeg_args_for(tag: &str, extra: &[&str]) -> Vec<String> {
+    let server = FakeServer::builder()
+        .screen(Screen::solid(64, 48, [255, 0, 0, 255]))
+        .start()
+        .await
+        .unwrap();
+    let home = TempDir::new(tag);
+    let path = fake_ffmpeg(home.path());
+    let args_file = home.path().join("ffmpeg-args");
+    let mut line: Vec<String> = vec![
+        "connect".into(),
+        format!("vnc://127.0.0.1:{}", server.addr().port()),
+        "--record".into(),
+        "run.mp4".into(),
+    ];
+    line.extend(extra.iter().map(|a| a.to_string()));
+    let home_path = home.path().to_path_buf();
+    let args_env = args_file.clone();
+    let (connected, disconnected) = tokio::task::spawn_blocking(move || {
+        let run = |args: &[&str]| {
+            Command::new(env!("CARGO_BIN_EXE_bolide"))
+                .args(args)
+                .current_dir(&home_path)
+                .envs(state_env(&home_path))
+                .env_remove("BOLIDE_PASSWORD")
+                .env("PATH", &path)
+                .env("BOLIDE_TEST_FFMPEG_ARGS", &args_env)
+                .output()
+                .expect("bolide runs")
+        };
+        let line: Vec<&str> = line.iter().map(String::as_str).collect();
+        (run(&line), run(&["disconnect"]))
+    })
+    .await
+    .unwrap();
+    assert!(connected.status.success(), "connect: {}", text(&connected));
+    assert!(
+        disconnected.status.success(),
+        "disconnect: {}",
+        text(&disconnected)
+    );
+    server.shutdown().await;
+    std::fs::read_to_string(&args_file)
+        .unwrap_or_else(|e| panic!("the fake ffmpeg wrote no arguments ({e})"))
+        .lines()
+        .map(String::from)
+        .collect()
+}
+
+/// With `--record`, the action log's header names the video and its rate, and its
+/// offsets count from the video's first frame, which is no earlier than the connect.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_action_log_names_the_recording_it_goes_with() {
+    let server = FakeServer::builder()
+        .screen(Screen::solid(64, 48, [255, 0, 0, 255]))
+        .start()
+        .await
+        .unwrap();
+    let home = TempDir::new("rec-alog");
+    let path = fake_ffmpeg(home.path());
+    let target = format!("vnc://127.0.0.1:{}", server.addr().port());
+    let flag = format!("--{}", bolide_cli::action_log::ACTION_LOG_FLAG);
+    let home_path = home.path().to_path_buf();
+    let args_file = home.path().join("ffmpeg-args");
+    let (outputs, log) = tokio::task::spawn_blocking(move || {
+        let run = |args: &[&str]| {
+            Command::new(env!("CARGO_BIN_EXE_bolide"))
+                .args(args)
+                .current_dir(&home_path)
+                .envs(state_env(&home_path))
+                .env_remove("BOLIDE_PASSWORD")
+                .env("PATH", &path)
+                .env("BOLIDE_TEST_FFMPEG_ARGS", &args_file)
+                .output()
+                .expect("bolide runs")
+        };
+        let connected = run(&[
+            "connect",
+            &target,
+            "--record",
+            "run.mp4",
+            "--record-fps",
+            "12",
+            &flag,
+            "run.jsonl",
+        ]);
+        let moved = run(&["move", "5", "5"]);
+        let log = std::fs::read_to_string(home_path.join("run.jsonl"));
+        let disconnected = run(&["disconnect"]);
+        ([connected, moved, disconnected], log)
+    })
+    .await
+    .unwrap();
+    for output in &outputs {
+        assert!(output.status.success(), "{}", text(output));
+    }
+    server.shutdown().await;
+
+    let log = log.expect("the action log");
+    let lines: Vec<serde_json::Value> = log
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let record = &lines[0]["record"];
+    assert_eq!(
+        record["file"],
+        serde_json::json!(home.path().join("run.mp4").display().to_string()),
+        "{log}"
+    );
+    assert_eq!(record["fps"], serde_json::json!(12), "{log}");
+    let (connected, start) = (
+        lines[0]["connected"].as_str().unwrap(),
+        record["start"].as_str().unwrap(),
+    );
+    assert!(connected <= start, "{log}");
+    assert_eq!(lines[1]["action"], serde_json::json!("mouse_move"), "{log}");
+    assert!(lines[1]["startS"].as_f64().unwrap() >= 0.0, "{log}");
+}
+
+fn rate_of(args: &[String]) -> Option<&str> {
+    args.windows(2)
+        .find(|w| w[0] == "-r")
+        .map(|w| w[1].as_str())
+}
+
+/// The production start path: `--record-fps` goes through the daemon's re-exec to the
+/// encoder, and without it the rate is 30.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_recording_rate_reaches_ffmpeg() {
+    let args = ffmpeg_args_for("rec-fps-default", &[]).await;
+    assert_eq!(rate_of(&args), Some("30"), "{args:?}");
+
+    let args = ffmpeg_args_for("rec-fps-12", &["--record-fps", "12"]).await;
+    assert_eq!(rate_of(&args), Some("12"), "{args:?}");
+}

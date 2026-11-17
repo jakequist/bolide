@@ -12,6 +12,10 @@
 //! | `GET /status` | — | [`crate::wire::StatusResponse`] |
 //! | `GET /healthz` | — | `200 ok`, no auth |
 //!
+//! With an [`crate::ActionLog`] configured, every route but `/status` and `/healthz`
+//! reports each request it handled to it, once answered; the answer is the same either
+//! way.
+//!
 //! Rules:
 //!
 //! - **Screenshots are fresh.** Before encoding, if the session is unpainted, ask for a
@@ -54,6 +58,9 @@ use base64::Engine as _;
 use bolide_rfb::{Error as RfbError, Framebuffer, Session};
 use serde::de::DeserializeOwned;
 
+use crate::action_log::{
+    describe_clipboard_set, describe_computer, describe_screenshot, LoggedRequest, CLIPBOARD_GET,
+};
 use crate::actions::{execute, plan, ActionError, PlanContext, RfbOp};
 use crate::humanized::{plan_humanized, PointerMode, SeededRandom};
 use crate::image::encode_png;
@@ -306,10 +313,49 @@ fn to_image(frame: &Framebuffer) -> Result<Image, ApiError> {
     })
 }
 
+// ---------------------------------------------------------------------- the action log
+
+/// Run `work`, and tell the action log, if there is one, what was asked (`describe`,
+/// called only then), when, and how it ended. The answer is `work`'s, untouched.
+async fn logged<F>(
+    state: &AppState,
+    describe: impl FnOnce() -> (String, serde_json::Map<String, serde_json::Value>),
+    work: F,
+) -> Result<Response, ApiError>
+where
+    F: std::future::Future<Output = Result<Response, ApiError>>,
+{
+    let Some(log) = state.config.action_log.as_deref() else {
+        return work.await;
+    };
+    let clock = state.config.clock.as_ref();
+    let start = clock.now();
+    let result = work.await;
+    let end = clock.now();
+    let (action, params) = describe();
+    log.record(LoggedRequest {
+        action,
+        params,
+        start,
+        end,
+        error: result.as_ref().err().map(|e| e.message.clone()),
+    });
+    result
+}
+
 // ------------------------------------------------------------------------- handlers
 
 async fn computer(State(state): State<Arc<AppState>>, body: Bytes) -> Result<Response, ApiError> {
-    let action: ComputerAction = parse_body(&body)?;
+    logged(
+        &state,
+        || describe_computer(&body),
+        computer_act(&state, &body),
+    )
+    .await
+}
+
+async fn computer_act(state: &AppState, body: &Bytes) -> Result<Response, ApiError> {
+    let action: ComputerAction = parse_body(body)?;
     let (width, height) = state.session.size();
     let ctx = PlanContext {
         width,
@@ -366,7 +412,7 @@ async fn computer(State(state): State<Arc<AppState>>, body: Bytes) -> Result<Res
     };
     match action {
         ComputerAction::Screenshot => {
-            response.image = Some(to_image(&fresh_frame(&state).await?)?);
+            response.image = Some(to_image(&fresh_frame(state).await?)?);
         }
         ComputerAction::CursorPosition => response.coordinate = Some(cursor),
         _ => {}
@@ -378,35 +424,49 @@ async fn screenshot(
     State(state): State<Arc<AppState>>,
     RawQuery(query): RawQuery,
 ) -> Result<Response, ApiError> {
-    let frame = fresh_frame(&state).await?;
-    if wants_json(query.as_deref()) {
-        return Ok(Json(to_image(&frame)?).into_response());
-    }
-    Ok(([(header::CONTENT_TYPE, "image/png")], to_png(&frame)?).into_response())
+    let query = query.as_deref();
+    logged(&state, || describe_screenshot(query), async {
+        let frame = fresh_frame(&state).await?;
+        if wants_json(query) {
+            return Ok(Json(to_image(&frame)?).into_response());
+        }
+        Ok(([(header::CONTENT_TYPE, "image/png")], to_png(&frame)?).into_response())
+    })
+    .await
 }
 
-async fn clipboard_get(State(state): State<Arc<AppState>>) -> Response {
-    Json(ClipboardResponse {
-        text: state.session.last_cut_text(),
-    })
-    .into_response()
+async fn clipboard_get(State(state): State<Arc<AppState>>) -> Result<Response, ApiError> {
+    logged(
+        &state,
+        || (CLIPBOARD_GET.to_string(), Default::default()),
+        async {
+            Ok(Json(ClipboardResponse {
+                text: state.session.last_cut_text(),
+            })
+            .into_response())
+        },
+    )
+    .await
 }
 
 async fn clipboard_post(
     State(state): State<Arc<AppState>>,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    let request: ClipboardRequest = parse_body(&body)?;
-    state
-        .session
-        .cut_text(&request.text)
-        .await
-        .map_err(from_rfb)?;
-    Ok(Json(ComputerResponse {
-        ok: true,
-        ..Default::default()
+    logged(&state, || describe_clipboard_set(&body), async {
+        let request: ClipboardRequest = parse_body(&body)?;
+        state
+            .session
+            .cut_text(&request.text)
+            .await
+            .map_err(from_rfb)?;
+        Ok(Json(ComputerResponse {
+            ok: true,
+            ..Default::default()
+        })
+        .into_response())
     })
-    .into_response())
+    .await
 }
 
 /// Answers even when the desktop is gone — that is the question it exists to answer.

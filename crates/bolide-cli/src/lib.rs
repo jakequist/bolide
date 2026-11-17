@@ -5,7 +5,8 @@
 //! ```text
 //! bolide connect vnc://[USER[:PASSWORD]@]HOST[:PORT] [--username U]
 //!                [--password PW | --password-file F] [--listen ADDR] [--token T]
-//!                [--record FILE.mp4|FILE.webm] [--foreground]
+//!                [--record FILE.mp4|FILE.webm [--record-fps N]]
+//!                [--action-log FILE.jsonl] [--foreground]
 //! bolide status
 //! bolide disconnect
 //! bolide screenshot [--out FILE.png | --out -]
@@ -94,6 +95,7 @@
 
 use std::path::PathBuf;
 
+pub mod action_log;
 pub mod api;
 pub mod cli;
 pub mod daemon;

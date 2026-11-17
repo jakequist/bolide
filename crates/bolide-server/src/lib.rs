@@ -36,11 +36,15 @@ use bolide_rfb::Session;
 
 pub mod wire;
 
+mod action_log;
 mod actions;
 mod http;
 mod humanized;
 mod image;
 
+pub use action_log::{
+    ActionLog, LoggedRequest, CLIPBOARD_GET, CLIPBOARD_SET, COMPUTER, SCREENSHOT,
+};
 pub use actions::{execute, plan, ActionError, Clock, DragPacing, PlanContext, RfbOp, TokioClock};
 pub use humanized::{plan_humanized, PointerMode, SeededRandom};
 pub use image::encode_png;
@@ -75,6 +79,9 @@ pub struct ServerConfig {
     pub remote: String,
     /// How long `screenshot` waits for a fresh frame before answering with what it has.
     pub frame_timeout: Duration,
+    /// Where each request that acts on the desktop is reported, if anywhere. Default
+    /// `None`. See [`ActionLog`] for which requests.
+    pub action_log: Option<Arc<dyn ActionLog>>,
 }
 
 impl Default for ServerConfig {
@@ -89,6 +96,7 @@ impl Default for ServerConfig {
             drag: DragPacing::DEFAULT,
             clock: Arc::new(TokioClock),
             input_settle: Duration::from_millis(500),
+            action_log: None,
         }
     }
 }

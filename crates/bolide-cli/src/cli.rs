@@ -214,10 +214,26 @@ pub struct ConnectArgs {
     ///
     /// Recording starts with the session and is finalised when it ends — `bolide
     /// disconnect`, Ctrl-C or the desktop going away. The video is the desktop's size at
-    /// connect, at 10 frames a second; a later resize is fitted into it. An existing
-    /// FILE is overwritten. Needs `ffmpeg` on PATH.
+    /// connect, at --record-fps frames a second; a later resize is fitted into it. An
+    /// existing FILE is overwritten. Needs `ffmpeg` on PATH.
     #[arg(long, value_name = "FILE", value_parser = crate::record::parse_record_path)]
     pub record: Option<PathBuf>,
+    /// Frames a second --record samples the desktop at, 1 to 60.
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = crate::record::DEFAULT_FPS,
+        value_parser = crate::record::parse_fps,
+    )]
+    pub record_fps: u32,
+    /// Log each request the server handles to FILE, as JSON Lines: what was asked, with
+    /// its parameters, when, and how it ended.
+    ///
+    /// The first line says what was connected; with --record, a line's offsets count
+    /// from the video's first frame. Typed text is logged in full, passwords included.
+    /// An existing FILE is overwritten.
+    #[arg(long = crate::action_log::ACTION_LOG_FLAG, value_name = "FILE")]
+    pub action_log: Option<PathBuf>,
     /// Stay attached instead of daemonising.
     #[arg(long)]
     pub foreground: bool,

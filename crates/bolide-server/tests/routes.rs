@@ -18,7 +18,7 @@ use bolide_server::wire::{
     ClipboardResponse, ComputerAction, ComputerResponse, ErrorCode, ErrorResponse, ScrollDirection,
     StatusResponse,
 };
-use bolide_server::{Clock, PointerMode, Running, ServerConfig};
+use bolide_server::{ActionLog, Clock, LoggedRequest, PointerMode, Running, ServerConfig};
 use tokio::sync::broadcast;
 
 // ---------------------------------------------------------------- the fake session
@@ -1152,6 +1152,279 @@ async fn cursor_position_reports_where_the_humanized_pointer_landed() {
     let at = expect_ok(h.action(&ComputerAction::CursorPosition).await).await;
     assert_eq!(at.coordinate, Some([i32::from(x), i32::from(y)]));
     assert!((i32::from(x) - 500).abs() <= 1 && (i32::from(y) - 300).abs() <= 1);
+    h.shutdown().await;
+}
+
+// ------------------------------------------------------------------- the action log
+
+/// An [`ActionLog`] that keeps every line it is given.
+#[derive(Debug, Default)]
+struct MemoryLog(Mutex<Vec<LoggedRequest>>);
+
+impl ActionLog for MemoryLog {
+    fn record(&self, request: LoggedRequest) {
+        self.0.lock().unwrap().push(request);
+    }
+}
+
+impl MemoryLog {
+    fn lines(&self) -> Vec<LoggedRequest> {
+        self.0.lock().unwrap().clone()
+    }
+
+    /// Each line as `(action, params, error)`, the part a test can state exactly.
+    fn said(&self) -> Vec<(String, serde_json::Value, Option<String>)> {
+        self.lines()
+            .into_iter()
+            .map(|l| (l.action, serde_json::Value::Object(l.params), l.error))
+            .collect()
+    }
+}
+
+/// A server on `session` that logs to the returned [`MemoryLog`], on a virtual clock.
+async fn logging(session: Arc<Fake>, token: Option<&str>) -> (Harness, Arc<MemoryLog>) {
+    let log = Arc::new(MemoryLog::default());
+    let h = Harness::start(
+        session,
+        ServerConfig {
+            remote: "fake01.local:5900".into(),
+            frame_timeout: Duration::from_millis(50),
+            clock: VirtualClock::new(),
+            token: token.map(String::from),
+            action_log: Some(log.clone()),
+            ..Default::default()
+        },
+    )
+    .await;
+    (h, log)
+}
+
+async fn post_raw(h: &Harness, path: &str, body: &str) -> reqwest::Response {
+    h.client
+        .post(h.url(path))
+        .header("content-type", "application/json")
+        .body(body.to_string())
+        .send()
+        .await
+        .expect("request")
+}
+
+/// One line per request, named as the caller named it, with what was sent in full:
+/// typed text included, every byte of it.
+#[tokio::test]
+async fn each_request_kind_is_logged_with_what_was_sent() {
+    let (h, log) = logging(Fake::new(800, 600), None).await;
+    let typed = "hello, wörld\n\tpassword: hunter2";
+    expect_ok(
+        h.action(&ComputerAction::LeftClick {
+            coordinate: [42, 17],
+        })
+        .await,
+    )
+    .await;
+    expect_ok(h.action(&ComputerAction::Type { text: typed.into() }).await).await;
+    expect_ok(
+        h.action(&ComputerAction::Key {
+            text: "ctrl+c".into(),
+        })
+        .await,
+    )
+    .await;
+    expect_ok(
+        h.action(&ComputerAction::LeftClickDrag {
+            start_coordinate: [1, 2],
+            coordinate: [30, 40],
+        })
+        .await,
+    )
+    .await;
+    assert_eq!(h.get("/screenshot").await.status().as_u16(), 200);
+    assert_eq!(
+        h.get("/screenshot?format=json").await.status().as_u16(),
+        200
+    );
+    assert_eq!(h.get("/clipboard").await.status().as_u16(), 200);
+    assert_eq!(
+        h.post("/clipboard", &serde_json::json!({"text": "pasted"}))
+            .await
+            .status()
+            .as_u16(),
+        200
+    );
+
+    use serde_json::json;
+    assert_eq!(
+        log.said(),
+        vec![
+            ("left_click".into(), json!({"coordinate": [42, 17]}), None),
+            ("type".into(), json!({ "text": typed }), None),
+            ("key".into(), json!({"text": "ctrl+c"}), None),
+            (
+                "left_click_drag".into(),
+                json!({"start_coordinate": [1, 2], "coordinate": [30, 40]}),
+                None
+            ),
+            ("screenshot".into(), json!({}), None),
+            ("screenshot".into(), json!({"format": "json"}), None),
+            ("clipboard_get".into(), json!({}), None),
+            ("clipboard_set".into(), json!({"text": "pasted"}), None),
+        ]
+    );
+    h.shutdown().await;
+}
+
+/// A request that fails is logged with the message its caller was answered with, under
+/// the name it asked for — even one the server could not parse.
+#[tokio::test]
+async fn a_failed_request_is_logged_with_its_error() {
+    let (h, log) = logging(Fake::new(64, 48), None).await;
+    let out_of_bounds = expect_error(
+        h.action(&ComputerAction::LeftClick {
+            coordinate: [9000, 1],
+        })
+        .await,
+        400,
+        ErrorCode::OutOfBounds,
+    )
+    .await;
+    let unknown_key = expect_error(
+        h.action(&ComputerAction::Key {
+            text: "ctrl+nosuchkey".into(),
+        })
+        .await,
+        400,
+        ErrorCode::UnknownKey,
+    )
+    .await;
+    let unknown_action = expect_error(
+        post_raw(&h, "/computer", r#"{"action":"fly","to":"moon"}"#).await,
+        400,
+        ErrorCode::BadRequest,
+    )
+    .await;
+    let not_json = expect_error(
+        post_raw(&h, "/computer", "{not json").await,
+        400,
+        ErrorCode::BadRequest,
+    )
+    .await;
+    let bad_clipboard = expect_error(
+        post_raw(&h, "/clipboard", r#"{"txt":"x"}"#).await,
+        400,
+        ErrorCode::BadRequest,
+    )
+    .await;
+
+    use serde_json::json;
+    assert_eq!(
+        log.said(),
+        vec![
+            (
+                "left_click".into(),
+                json!({"coordinate": [9000, 1]}),
+                Some(out_of_bounds.message)
+            ),
+            (
+                "key".into(),
+                json!({"text": "ctrl+nosuchkey"}),
+                Some(unknown_key.message)
+            ),
+            (
+                "fly".into(),
+                json!({"to": "moon"}),
+                Some(unknown_action.message)
+            ),
+            (
+                "computer".into(),
+                json!({"body": "{not json"}),
+                Some(not_json.message)
+            ),
+            (
+                "clipboard_set".into(),
+                json!({"txt": "x"}),
+                Some(bad_clipboard.message)
+            ),
+        ]
+    );
+    h.shutdown().await;
+}
+
+/// The desktop going away is an error line too.
+#[tokio::test]
+async fn a_request_to_a_desktop_that_has_gone_is_logged_as_an_error() {
+    let (h, log) = logging(Fake::new(64, 48).disconnected(), None).await;
+    let gone = expect_error(
+        h.post("/clipboard", &serde_json::json!({"text": "x"}))
+            .await,
+        503,
+        ErrorCode::Disconnected,
+    )
+    .await;
+    assert_eq!(
+        log.said(),
+        vec![(
+            "clipboard_set".into(),
+            serde_json::json!({"text": "x"}),
+            Some(gone.message)
+        )]
+    );
+    h.shutdown().await;
+}
+
+/// `/status` and `/healthz` are questions about bolide, not acts on the desktop.
+#[tokio::test]
+async fn status_and_healthz_are_not_logged() {
+    let (h, log) = logging(Fake::new(64, 48), None).await;
+    assert_eq!(h.get("/status").await.status().as_u16(), 200);
+    assert_eq!(h.get("/healthz").await.status().as_u16(), 200);
+    assert_eq!(h.get("/clipboard").await.status().as_u16(), 200);
+    let actions: Vec<String> = log.lines().into_iter().map(|l| l.action).collect();
+    assert_eq!(actions, vec!["clipboard_get"]);
+    h.shutdown().await;
+}
+
+/// A request refused for its token never reached the desktop, so it is not a line.
+#[tokio::test]
+async fn a_request_refused_for_its_token_is_not_logged() {
+    let (h, log) = logging(Fake::new(64, 48), Some("s3cret-token")).await;
+    let refused = h.get("/clipboard").await;
+    assert_eq!(refused.status().as_u16(), 401);
+    assert!(log.lines().is_empty(), "{:?}", log.lines());
+    let allowed = h
+        .client
+        .get(h.url("/clipboard"))
+        .bearer_auth("s3cret-token")
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(allowed.status().as_u16(), 200);
+    assert_eq!(log.lines().len(), 1);
+    h.shutdown().await;
+}
+
+/// A line's start and end are the server's clock when the request arrived and when it
+/// was answered, so a `wait` spans exactly its wait, and one request after another reads
+/// in order.
+#[tokio::test]
+async fn a_line_spans_the_time_its_request_took_on_the_server_s_clock() {
+    let (h, log) = logging(Fake::new(64, 48), None).await;
+    expect_ok(h.action(&ComputerAction::Wait { duration: 2.0 }).await).await;
+    expect_ok(
+        h.action(&ComputerAction::LeftClick {
+            coordinate: [10, 10],
+        })
+        .await,
+    )
+    .await;
+    expect_ok(h.action(&ComputerAction::Wait { duration: 0.5 }).await).await;
+    let lines = log.lines();
+    assert_eq!(lines.len(), 3);
+    assert_eq!(lines[0].end - lines[0].start, Duration::from_secs(2));
+    assert_eq!(lines[2].end - lines[2].start, Duration::from_millis(500));
+    for pair in lines.windows(2) {
+        assert!(pair[0].start <= pair[0].end);
+        assert!(pair[0].end <= pair[1].start, "{pair:?}");
+    }
     h.shutdown().await;
 }
 

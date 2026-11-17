@@ -168,6 +168,14 @@ closed and bolide waits for it to write the file, and only then is the server sh
 Both seams are traits, so the tests drive the recorder with a ticker and a sink they
 control, against the in-process RFB server.
 
+`connect --action-log FILE` is passed to the daemon as an absolute path too. The server
+knows what each request asked and when, on its `Clock`, and reports it to an
+`ActionLog` in its `ServerConfig` once the request is answered; `record` returns nothing,
+so a log cannot fail a request. The CLI's `ActionLogFile` turns each report into a JSON
+line, with wall-clock times derived from one reading of both clocks at connect and
+offsets counted from the recording's first frame (the instant its ticker is anchored to)
+or from the connect. The format is in the README.
+
 ## Portability
 
 Linux and macOS, from one source tree. The only platform-specific decision is where

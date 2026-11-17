@@ -96,6 +96,16 @@ pub fn child_args(args: &ConnectArgs, target: &Target, creds: &Credentials) -> V
         out.push("--record".to_string());
         out.push(record.display().to_string());
     }
+    if let Some(log) = &args.action_log {
+        // Absolute, for the same reason as the recording.
+        let log = std::path::absolute(log).unwrap_or_else(|_| log.clone());
+        out.push(format!("--{}", crate::action_log::ACTION_LOG_FLAG));
+        out.push(log.display().to_string());
+    }
+    if args.record_fps != crate::record::DEFAULT_FPS {
+        out.push("--record-fps".to_string());
+        out.push(args.record_fps.to_string());
+    }
     out.push("--foreground".to_string());
     out
 }

@@ -162,6 +162,52 @@ fn a_recording_that_is_neither_mp4_nor_webm_is_a_usage_error() {
 }
 
 #[test]
+fn a_recording_is_30_frames_a_second_unless_asked_otherwise() {
+    assert_eq!(connect_args(&["connect", "vnc://h"]).record_fps, 30);
+    for (given, want) in [("1", 1), ("12", 12), ("60", 60)] {
+        assert_eq!(
+            connect_args(&["connect", "vnc://h", "--record-fps", given]).record_fps,
+            want
+        );
+    }
+}
+
+#[test]
+fn a_recording_rate_of_0_or_above_60_is_a_usage_error_that_says_the_range() {
+    for rate in ["0", "61", "1000", "ten"] {
+        let err = parse_args(&args(&["connect", "vnc://h", "--record-fps", rate])).unwrap_err();
+        assert_eq!(err.code, EXIT_USAGE, "{rate}: {}", err.message);
+        assert!(
+            err.message.contains("--record-fps")
+                && err.message.contains("1 to 60")
+                && err.message.contains(rate),
+            "{rate}: {}",
+            err.message
+        );
+    }
+}
+
+/// `--action-log` spelled through its one constant, so renaming the flag changes no test.
+fn action_log_flag() -> String {
+    format!("--{}", bolide_cli::action_log::ACTION_LOG_FLAG)
+}
+
+#[test]
+fn connect_writes_an_action_log_only_when_asked() {
+    assert_eq!(connect_args(&["connect", "vnc://h"]).action_log, None);
+    assert_eq!(
+        connect_args(&["connect", "vnc://h", &action_log_flag(), "out/a.jsonl"]).action_log,
+        Some(PathBuf::from("out/a.jsonl"))
+    );
+}
+
+#[test]
+fn connect_help_names_the_action_log() {
+    let err = parse_args(&args(&["connect", "--help"])).unwrap_err();
+    assert!(err.message.contains(&action_log_flag()), "{}", err.message);
+}
+
+#[test]
 fn settle_ms_overrides_the_wait_before_a_screenshot_that_follows_input() {
     assert_eq!(
         connect_args(&["connect", "vnc://h"]).input_settle(),
