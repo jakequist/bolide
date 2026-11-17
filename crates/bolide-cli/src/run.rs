@@ -307,7 +307,12 @@ fn disconnect() -> Result<(), CliError> {
     Ok(())
 }
 
-async fn connect(args: ConnectArgs) -> Result<(), CliError> {
+async fn connect(mut args: ConnectArgs) -> Result<(), CliError> {
+    if args.pointer == bolide_server::PointerMode::Humanized {
+        // Chosen here, before any re-exec, so the daemon gets it as `--seed` and the
+        // terminal that started the session can print it.
+        args.seed = Some(args.pointer_seed(fresh_seed));
+    }
     let target = crate::cli::parse_target(&args.target).map_err(CliError::usage)?;
     let creds = crate::cli::command_line_credentials(&target, &args)?;
     let dir = state::require_state_dir().map_err(|e| CliError::failure(e.to_string()))?;
@@ -357,6 +362,7 @@ fn spawn_and_wait(
         Ok(state) => {
             println!("connected to {}", state.remote);
             println!("computer-use on {}", state.endpoint);
+            print_pointer(args);
             Ok(())
         }
         Err(stop) => {
@@ -410,12 +416,15 @@ async fn serve_foreground(
         None => None,
     };
 
+    let seed = args.pointer_seed(fresh_seed);
     let running = bolide_server::serve(
         Arc::clone(&session),
         bolide_server::ServerConfig {
             bind: args.listen,
             token: args.token.clone(),
             remote: remote.clone(),
+            pointer: args.pointer,
+            seed,
             drag: args.drag_pacing(),
             input_settle: args.input_settle(),
             ..Default::default()
@@ -438,6 +447,7 @@ async fn serve_foreground(
 
     println!("connected to {remote} ({width}x{height}, {desktop_name:?})");
     println!("computer-use on {endpoint}");
+    print_pointer(&args);
     if let Some(recording) = &recording {
         println!("recording to {}", recording.path().display());
     }
@@ -457,6 +467,22 @@ async fn serve_foreground(
     let _ = session.close().await;
     let _ = state::clear_in(dir);
     Ok(())
+}
+
+/// A humanized pointer's seed, so a session's movements can be replayed with `--seed`.
+fn print_pointer(args: &ConnectArgs) {
+    if let (bolide_server::PointerMode::Humanized, Some(seed)) = (args.pointer, args.seed) {
+        println!("pointer: {} (seed {seed})", args.pointer.as_str());
+    }
+}
+
+/// A seed for a session that was given none: the clock's nanoseconds and the process id,
+/// so two sessions started together still differ. Not secret, and not meant to be.
+fn fresh_seed() -> u32 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos() ^ (d.as_secs() as u32));
+    nanos ^ std::process::id().rotate_left(16)
 }
 
 /// Until the desktop goes away, or somebody asks us to stop.

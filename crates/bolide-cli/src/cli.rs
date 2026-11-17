@@ -20,10 +20,16 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use bolide_server::wire::{ComputerAction, ScrollDirection};
-use bolide_server::DragPacing;
+use bolide_server::{DragPacing, PointerMode};
+use clap::builder::TypedValueParser as _;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use crate::error::CliError;
+
+/// The `connect` flag that picks how the pointer moves, without its `--`: the one place
+/// its name is written. clap, the daemon's re-exec and the tests all read it from here.
+/// Its values are [`PointerMode::NAMES`].
+pub const POINTER_FLAG: &str = "pointer";
 
 /// The whole command line.
 #[derive(Debug, Parser)]
@@ -40,6 +46,9 @@ pub struct Cli {
 }
 
 /// One subcommand.
+// One value per process, parsed once from argv: the bytes `Connect` carries over the other
+// variants are never copied in bulk, and boxing it would cost every caller a deref.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Connect to a desktop and start the computer-use server.
@@ -161,17 +170,39 @@ pub struct ConnectArgs {
     /// Require `Authorization: Bearer T` on every route but `/healthz`.
     #[arg(long, value_name = "T")]
     pub token: Option<String>,
+    /// How the pointer moves.
+    ///
+    /// `direct` (the default) jumps to each point and presses at once. `humanized` moves
+    /// like a hand: a curved path timed by the distance, with a little tremor and an
+    /// overshoot on long moves, a pause before each press and a held press, and scroll
+    /// notches in runs. Each act then takes longer — about half a second to a second a
+    /// click. Typing and keys are the same in both.
+    #[arg(
+        long = POINTER_FLAG,
+        value_name = "MODE",
+        default_value = PointerMode::Direct.as_str(),
+        value_parser = clap::builder::PossibleValuesParser::new(PointerMode::NAMES)
+            .map(|name| PointerMode::from_name(&name)
+                // Cannot fail: the possible values are exactly the names it knows.
+                .expect("a possible value is a pointer mode")),
+    )]
+    pub pointer: PointerMode,
+    /// The seed of a humanized pointer's randomness: the same seed and the same acts move
+    /// the same way. Without it, each session picks its own.
+    #[arg(long, value_name = "N")]
+    pub seed: Option<u32>,
     /// Held pointer moves a drag takes from its start to its end [default: 20].
     ///
     /// Finder ignores a drag that jumps straight to its end. `--drag-steps 1
-    /// --drag-step-ms 0 --drag-dwell-ms 0` is the bare press, move, release.
+    /// --drag-step-ms 0 --drag-dwell-ms 0` is the bare press, move, release. The drag
+    /// flags pace a direct pointer; a humanized one paces its own drags and ignores them.
     #[arg(long, value_name = "N")]
     pub drag_steps: Option<u16>,
-    /// Milliseconds between a drag's moves [default: 20].
+    /// Milliseconds between a drag's moves [default: 20]. Direct pointer only.
     #[arg(long, value_name = "MS")]
     pub drag_step_ms: Option<u64>,
     /// Milliseconds a drag holds still after the press and before the release
-    /// [default: 150].
+    /// [default: 150]. Direct pointer only.
     #[arg(long, value_name = "MS")]
     pub drag_dwell_ms: Option<u64>,
     /// Milliseconds a screenshot lets pass after the last click or key before asking
@@ -193,6 +224,12 @@ pub struct ConnectArgs {
 }
 
 impl ConnectArgs {
+    /// The seed the session's pointer draws from: `--seed`, or `fresh()` when none was
+    /// given.
+    pub fn pointer_seed(&self, fresh: impl FnOnce() -> u32) -> u32 {
+        self.seed.unwrap_or_else(fresh)
+    }
+
     /// The drag pacing these flags ask for: the server's default, with each flag
     /// replacing the one field it names.
     pub fn drag_pacing(&self) -> DragPacing {

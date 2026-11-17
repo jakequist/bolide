@@ -116,11 +116,37 @@ Then `bolide screenshot --out /tmp/s.png` and look at it.
 
 `connect` options: `--username U`, `--password PW`, `--password-file F` (or the
 `BOLIDE_PASSWORD` environment variable), `--auth auto|ard|vnc`, `--listen ADDR`,
-`--token T`, `--foreground`, `--record FILE` (below), and the timing knobs
-`--drag-steps N`, `--drag-step-ms MS`, `--drag-dwell-ms MS` (how a drag walks) and
-`--settle-ms MS` (how long a screenshot after input lets the app redraw). Credentials
-can also ride in the URL: `vnc://jake:pw@mac01.local` (percent-encode an `@`, `:` or `%`
-in them).
+`--token T`, `--foreground`, `--record FILE` (below), `--pointer direct|humanized` and
+`--seed N` (below), and the timing knobs `--drag-steps N`, `--drag-step-ms MS`,
+`--drag-dwell-ms MS` (how a direct drag walks) and `--settle-ms MS` (how long a
+screenshot after input lets the app redraw). Credentials can also ride in the URL:
+`vnc://jake:pw@mac01.local` (percent-encode an `@`, `:` or `%` in them).
+
+## Moving the pointer like a person
+
+By default the pointer is `direct`: it jumps to each point and presses at once, the
+fastest way there is. `bolide connect --pointer humanized` moves it like a hand instead:
+
+- a move follows a curved path, fastest in the middle, timed by Fitts's law (further
+  takes longer), with a little tremor, and a long move overshoots and comes back;
+- a click hovers before the press and holds the button down; a double or triple click
+  has human gaps between its clicks, all at one spot, within a pixel of the point;
+- a drag reaches the start, presses, carries the item more slowly along its own path,
+  pauses, and releases on the target;
+- a scroll moves to the point first, then sends its notches in runs that speed up and
+  slow down, with a pause between runs.
+
+Every move starts from where bolide last left the pointer (from the centre of the
+screen before its first one), so the pointer never jumps. Each act takes longer: about
+half a second for a click near the pointer, about a second for one across half the
+screen, up to two seconds corner to corner. The drag flags above pace a direct drag only;
+a humanized drag paces itself and ignores them. Typing and keys are the same in both
+modes.
+
+The randomness comes from one seeded stream per session: `--seed N` makes a session's
+pointer move the same way each time it does the same things. Without `--seed`, `connect`
+picks one and prints it. The movement is a port of meteor's humanized interaction
+(`desktops/interaction`), with its constants.
 
 ## Recording a session
 

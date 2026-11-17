@@ -38,16 +38,25 @@ pub mod wire;
 
 mod actions;
 mod http;
+mod humanized;
 mod image;
 
 pub use actions::{execute, plan, ActionError, Clock, DragPacing, PlanContext, RfbOp, TokioClock};
+pub use humanized::{plan_humanized, PointerMode, SeededRandom};
 pub use image::encode_png;
 
 /// How to run the server.
 #[derive(Clone, Debug)]
 pub struct ServerConfig {
-    /// How `left_click_drag` walks from its start to its end. Default
-    /// [`DragPacing::DEFAULT`].
+    /// How the pointer moves. Default [`PointerMode::Direct`], bolide's behaviour before
+    /// humanized input; the CLI's `--pointer` sets it.
+    pub pointer: PointerMode,
+    /// The seed of the one random stream a humanized pointer draws from, for the whole
+    /// session: the same seed and the same acts send the same events. Unused in direct
+    /// mode.
+    pub seed: u32,
+    /// How `left_click_drag` walks from its start to its end, in direct mode. Default
+    /// [`DragPacing::DEFAULT`]. A humanized drag paces itself and ignores this.
     pub drag: DragPacing,
     /// Where an action's waits are spent. Default [`TokioClock`]; a test hands in one
     /// that records them instead.
@@ -75,6 +84,8 @@ impl Default for ServerConfig {
             token: None,
             remote: String::new(),
             frame_timeout: Duration::from_secs(5),
+            pointer: PointerMode::Direct,
+            seed: 0,
             drag: DragPacing::DEFAULT,
             clock: Arc::new(TokioClock),
             input_settle: Duration::from_millis(500),

@@ -4,10 +4,10 @@ use std::path::PathBuf;
 
 use bolide_cli::cli::{
     command_line_credentials, parse_args, parse_target, redact_password, Button, Command,
-    ConnectArgs, Dir, Target,
+    ConnectArgs, Dir, Target, POINTER_FLAG,
 };
 use bolide_cli::error::{Stream, EXIT_USAGE};
-use bolide_server::DragPacing;
+use bolide_server::{DragPacing, PointerMode};
 
 fn args(line: &[&str]) -> Vec<String> {
     std::iter::once("bolide")
@@ -81,6 +81,60 @@ fn drag_pacing_flags_override_only_what_they_name() {
         },
         "the bare four-event drag is one flag set away"
     );
+}
+
+/// `--pointer` spelled through its one constant, so renaming the flag changes no test.
+fn pointer_flag() -> String {
+    format!("--{POINTER_FLAG}")
+}
+
+#[test]
+fn the_pointer_is_direct_unless_asked_otherwise() {
+    let c = connect_args(&["connect", "vnc://h"]);
+    assert_eq!(c.pointer, PointerMode::Direct);
+    assert_eq!(c.seed, None);
+    assert_eq!(
+        connect_args(&["connect", "vnc://h", &pointer_flag(), "direct"]).pointer,
+        PointerMode::Direct
+    );
+}
+
+#[test]
+fn connect_takes_a_humanized_pointer_and_a_seed() {
+    let c = connect_args(&[
+        "connect",
+        "vnc://h",
+        &pointer_flag(),
+        "humanized",
+        "--seed",
+        "42",
+    ]);
+    assert_eq!(c.pointer, PointerMode::Humanized);
+    assert_eq!(c.seed, Some(42));
+    assert_eq!(c.pointer_seed(|| 7), 42, "a seed given is the seed used");
+    assert_eq!(
+        connect_args(&["connect", "vnc://h"]).pointer_seed(|| 7),
+        7,
+        "no seed: a fresh one"
+    );
+}
+
+#[test]
+fn an_unknown_pointer_mode_is_a_usage_error_that_lists_the_modes() {
+    let err = parse_args(&args(&["connect", "vnc://h", &pointer_flag(), "human"])).unwrap_err();
+    assert_eq!(err.code, EXIT_USAGE);
+    for name in PointerMode::NAMES {
+        assert!(err.message.contains(name), "{name}: {}", err.message);
+    }
+}
+
+#[test]
+fn connect_help_names_the_pointer_modes() {
+    let err = parse_args(&args(&["connect", "--help"])).unwrap_err();
+    assert!(err.message.contains(&pointer_flag()), "{}", err.message);
+    for name in PointerMode::NAMES {
+        assert!(err.message.contains(name), "{name}: {}", err.message);
+    }
 }
 
 #[test]

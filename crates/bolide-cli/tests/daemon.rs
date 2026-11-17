@@ -7,7 +7,9 @@ mod common;
 
 use std::cell::Cell;
 
-use bolide_cli::cli::{command_line_credentials, parse_args, parse_target, Command, Password};
+use bolide_cli::cli::{
+    command_line_credentials, parse_args, parse_target, Command, Password, POINTER_FLAG,
+};
 use bolide_cli::daemon::{self, ChildStatus};
 use bolide_cli::error::EXIT_FAILURE;
 use bolide_cli::run::PASSWORD_ENV;
@@ -261,6 +263,24 @@ fn the_log_tail_is_the_last_few_lines_and_nothing_else() {
     assert_eq!(tail, "line 18\nline 19\nline 20");
 
     assert_eq!(daemon::log_tail(&dir.path().join("missing.log"), 3), "");
+}
+
+/// The daemon moves the pointer the way `connect` was asked to, from the same seed. A
+/// direct pointer, the default, adds nothing to the child's argv.
+#[test]
+fn the_pointer_mode_and_seed_reach_the_child() {
+    let flag = format!("--{POINTER_FLAG}");
+    let child = child_of(&["connect", "vnc://h", &flag, "humanized", "--seed", "9"]);
+    assert!(
+        child.windows(2).any(|w| w == [flag.as_str(), "humanized"]),
+        "{child:?}"
+    );
+    assert!(child.windows(2).any(|w| w == ["--seed", "9"]), "{child:?}");
+    assert_eq!(child.last().map(String::as_str), Some("--foreground"));
+
+    let child = child_of(&["connect", "vnc://h", &flag, "direct"]);
+    assert!(!child.contains(&flag), "{child:?}");
+    assert!(!child.iter().any(|a| a == "--seed"), "{child:?}");
 }
 
 #[test]

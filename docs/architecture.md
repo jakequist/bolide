@@ -89,7 +89,11 @@ are questions about a sequence: does a click move before it presses (it must —
 no "click at (x, y)", so a press carries whatever position preceded it)? does a drag
 release at the end coordinate, after walking there with the button held? does a scroll
 of zero notches move the pointer at all (it must not)? Those are table tests over a
-function, not integration tests.
+function, not integration tests. `plan_humanized`, for `--pointer humanized`, is the same
+shape with two more inputs: where the pointer is, and the session's seeded random stream
+(`SeededRandom`, meteor's mulberry32). The same seed from the same place gives the same
+ops, so its paths, pauses and overshoots are asserted on bytes too, and
+`humanized/score.rs` scores them with meteor's bot-score fixture.
 
 **`bolide_server::Clock` is where time is spent.** A drag's pauses, a `wait` and the
 settling before a screenshot that follows input all go through the `clock` in

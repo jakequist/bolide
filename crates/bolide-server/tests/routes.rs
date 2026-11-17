@@ -18,7 +18,7 @@ use bolide_server::wire::{
     ClipboardResponse, ComputerAction, ComputerResponse, ErrorCode, ErrorResponse, ScrollDirection,
     StatusResponse,
 };
-use bolide_server::{Clock, Running, ServerConfig};
+use bolide_server::{Clock, PointerMode, Running, ServerConfig};
 use tokio::sync::broadcast;
 
 // ---------------------------------------------------------------- the fake session
@@ -1043,5 +1043,147 @@ async fn two_actions_never_braid_their_events_together() {
         "the two actions braided: {letters:?}"
     );
 
+    h.shutdown().await;
+}
+
+// ------------------------------------------------------------- --pointer humanized
+
+/// A harness whose pointer moves like a hand, from `seed`, on a clock that never waits.
+async fn humanized(seed: u32) -> Harness {
+    Harness::start(
+        Fake::new(1280, 800),
+        ServerConfig {
+            pointer: PointerMode::Humanized,
+            seed,
+            frame_timeout: Duration::from_millis(50),
+            clock: VirtualClock::new(),
+            ..Default::default()
+        },
+    )
+    .await
+}
+
+fn pointer_calls(calls: &[Call]) -> Vec<(u16, u16, u8)> {
+    calls
+        .iter()
+        .filter_map(|c| match *c {
+            Call::Pointer { x, y, buttons } => Some((x, y, buttons)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A few acts a person makes, as the session hears them.
+async fn a_few_pointer_acts(h: &Harness) -> Vec<Call> {
+    for act in [
+        ComputerAction::MouseMove {
+            coordinate: [100, 100],
+        },
+        ComputerAction::LeftClick {
+            coordinate: [900, 600],
+        },
+        ComputerAction::LeftClickDrag {
+            start_coordinate: [900, 600],
+            coordinate: [300, 700],
+        },
+        ComputerAction::Scroll {
+            coordinate: [640, 400],
+            scroll_direction: ScrollDirection::Down,
+            scroll_amount: 3,
+        },
+    ] {
+        expect_ok(h.action(&act).await).await;
+    }
+    h.session.calls()
+}
+
+/// The direct default is unchanged: `ServerConfig::default()` teleports, as it always has.
+#[test]
+fn the_pointer_is_direct_unless_asked_otherwise() {
+    assert_eq!(ServerConfig::default().pointer, PointerMode::Direct);
+}
+
+/// The pointer starts from where bolide last left it: across four acts, no step from one
+/// PointerEvent to the next is a jump, and the first leaves from the screen's centre.
+#[tokio::test]
+async fn a_humanized_pointer_starts_each_act_from_where_the_last_one_left_it() {
+    let h = humanized(1).await;
+    let pointers = pointer_calls(&a_few_pointer_acts(&h).await);
+    let mut prev = (640i32, 400i32);
+    for (i, &(x, y, _)) in pointers.iter().enumerate() {
+        let (x, y) = (i32::from(x), i32::from(y));
+        let step = f64::from(x - prev.0).hypot(f64::from(y - prev.1));
+        assert!(step < 80.0, "event {i} jumped {step} px to ({x}, {y})");
+        prev = (x, y);
+    }
+    assert!(pointers.len() > 40, "only {} PointerEvents", pointers.len());
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_same_seed_sends_the_same_events_and_another_does_not() {
+    let a = humanized(7).await;
+    let b = humanized(7).await;
+    let c = humanized(8).await;
+    let (ca, cb, cc) = (
+        a_few_pointer_acts(&a).await,
+        a_few_pointer_acts(&b).await,
+        a_few_pointer_acts(&c).await,
+    );
+    assert_eq!(ca, cb);
+    assert_ne!(ca, cc);
+    for h in [a, b, c] {
+        h.shutdown().await;
+    }
+}
+
+/// `cursor_position` is still bolide's own last PointerEvent: where the hand landed.
+#[tokio::test]
+async fn cursor_position_reports_where_the_humanized_pointer_landed() {
+    let h = humanized(3).await;
+    expect_ok(
+        h.action(&ComputerAction::LeftClick {
+            coordinate: [500, 300],
+        })
+        .await,
+    )
+    .await;
+    let (x, y, _) = *pointer_calls(&h.session.calls()).last().expect("moved");
+    let at = expect_ok(h.action(&ComputerAction::CursorPosition).await).await;
+    assert_eq!(at.coordinate, Some([i32::from(x), i32::from(y)]));
+    assert!((i32::from(x) - 500).abs() <= 1 && (i32::from(y) - 300).abs() <= 1);
+    h.shutdown().await;
+}
+
+/// Typing is not humanized: one down and one up per character, as in direct mode.
+#[tokio::test]
+async fn typing_with_a_humanized_pointer_types_as_direct_mode_does() {
+    let h = humanized(1).await;
+    expect_ok(h.action(&ComputerAction::Type { text: "hi".into() }).await).await;
+    let (hk, ik) = (
+        bolide_rfb::keysym::keysym_for_char('h'),
+        bolide_rfb::keysym::keysym_for_char('i'),
+    );
+    assert_eq!(
+        h.session.calls(),
+        vec![
+            Call::Key {
+                keysym: hk,
+                down: true
+            },
+            Call::Key {
+                keysym: hk,
+                down: false
+            },
+            Call::Key {
+                keysym: ik,
+                down: true
+            },
+            Call::Key {
+                keysym: ik,
+                down: false
+            },
+        ]
+    );
     h.shutdown().await;
 }

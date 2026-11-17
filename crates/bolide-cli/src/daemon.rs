@@ -22,7 +22,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
-use crate::cli::{ConnectArgs, Credentials, Password, Target};
+use bolide_server::PointerMode;
+
+use crate::cli::{ConnectArgs, Credentials, Password, Target, POINTER_FLAG};
 use crate::error::CliError;
 use crate::run::PASSWORD_ENV;
 use crate::state::{self, SessionState};
@@ -69,7 +71,12 @@ pub fn child_args(args: &ConnectArgs, target: &Target, creds: &Credentials) -> V
         out.push("--token".to_string());
         out.push(token.clone());
     }
+    if args.pointer != PointerMode::default() {
+        out.push(format!("--{POINTER_FLAG}"));
+        out.push(args.pointer.as_str().to_string());
+    }
     for (flag, value) in [
+        ("--seed", args.seed.map(u64::from)),
         ("--drag-steps", args.drag_steps.map(u64::from)),
         ("--drag-step-ms", args.drag_step_ms),
         ("--drag-dwell-ms", args.drag_dwell_ms),

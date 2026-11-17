@@ -71,6 +71,17 @@ a disk image's Applications alias does nothing. `bolide connect --drag-steps N
 --drag-step-ms MS --drag-dwell-ms MS` changes the pacing, and `--drag-steps 1
 --drag-step-ms 0 --drag-dwell-ms 0` is the bare press, move, release.
 
+### `--pointer humanized`
+
+The table and the drag above describe the default, `direct`, pointer. Under `bolide
+connect --pointer humanized` the pointer acts (`mouse_move`, the clicks,
+`left_click_drag`, `scroll`) reach the desktop as a person's hand would make them: many
+PointerEvents along a curved path from where the last action left the pointer, with
+pauses between them, then the presses. A click lands within a pixel of `coordinate`
+(still on the screen), and the drag flags do not apply; see the README. The response is
+the same, and comes when the last event has gone out, so an action takes as long as a
+person would. `type`, `key` and the rest are unchanged.
+
 `scroll_amount` and `duration` are honoured in full — there is no cap on how far a caller
 scrolls or how long it waits; a negative or NaN `duration` is zero. Request bodies have no
 size limit either, so a large clipboard paste goes through.

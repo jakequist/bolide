@@ -148,7 +148,10 @@ impl PlanContext {
     /// No clamping, on purpose: `0..width` and `0..height` are the only coordinates a
     /// desktop has, and a caller that thinks the screen is bigger has a bug that a
     /// silent redirect to the edge would hide.
-    fn check(&self, coordinate: [i32; 2]) -> std::result::Result<(u16, u16), ActionError> {
+    pub(crate) fn check(
+        &self,
+        coordinate: [i32; 2],
+    ) -> std::result::Result<(u16, u16), ActionError> {
         let [x, y] = coordinate;
         if x < 0 || y < 0 || x >= i32::from(self.width) || y >= i32::from(self.height) {
             return Err(ActionError::OutOfBounds {
@@ -865,6 +868,181 @@ mod tests {
             expected
         );
     }
+
+    /// One line per op: `pointer x,y buttons=b` · `key 0xKEYSYM down|up` · `sleep MS`.
+    fn timeline(ops: &[RfbOp]) -> String {
+        ops.iter()
+            .map(|op| match op {
+                RfbOp::Pointer { x, y, buttons } => format!("pointer {x},{y} buttons={buttons}"),
+                RfbOp::Key { keysym, down } => {
+                    format!("key {keysym:#x} {}", if *down { "down" } else { "up" })
+                }
+                RfbOp::Sleep { ms } => format!("sleep {ms}"),
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The golden of the direct planner: every act it covers, planned with the default
+    /// pacing, as the exact ops bolide sends. Written against the planner as it stood
+    /// before humanized input existed, so `--input direct` is held to plan exactly what
+    /// bolide always did.
+    #[test]
+    fn the_direct_planner_plans_exactly_what_it_always_has() {
+        let acts = [
+            ComputerAction::MouseMove { coordinate: [7, 8] },
+            ComputerAction::LeftClick {
+                coordinate: [42, 17],
+            },
+            ComputerAction::RightClick {
+                coordinate: [43, 18],
+            },
+            ComputerAction::MiddleClick {
+                coordinate: [44, 19],
+            },
+            ComputerAction::DoubleClick { coordinate: [5, 6] },
+            ComputerAction::TripleClick {
+                coordinate: [9, 10],
+            },
+            ComputerAction::LeftClickDrag {
+                start_coordinate: [100, 200],
+                coordinate: [300, 250],
+            },
+            ComputerAction::Scroll {
+                coordinate: [3, 4],
+                scroll_direction: ScrollDirection::Down,
+                scroll_amount: 2,
+            },
+            ComputerAction::Scroll {
+                coordinate: [3, 4],
+                scroll_direction: ScrollDirection::Up,
+                scroll_amount: 1,
+            },
+            ComputerAction::Type {
+                text: "Hi!\n\t".into(),
+            },
+            ComputerAction::Key {
+                text: "ctrl+shift+t".into(),
+            },
+            ComputerAction::Wait { duration: 0.25 },
+            ComputerAction::Screenshot,
+            ComputerAction::CursorPosition,
+        ];
+        let golden: Vec<String> = acts
+            .iter()
+            .map(|act| format!("# {act:?}\n{}", timeline(&ops(act.clone()))))
+            .collect();
+        assert_eq!(golden.join("\n").trim(), DIRECT_GOLDEN.trim());
+    }
+
+    const DIRECT_GOLDEN: &str = r#"
+# MouseMove { coordinate: [7, 8] }
+pointer 7,8 buttons=0
+# LeftClick { coordinate: [42, 17] }
+pointer 42,17 buttons=0
+pointer 42,17 buttons=1
+pointer 42,17 buttons=0
+# RightClick { coordinate: [43, 18] }
+pointer 43,18 buttons=0
+pointer 43,18 buttons=4
+pointer 43,18 buttons=0
+# MiddleClick { coordinate: [44, 19] }
+pointer 44,19 buttons=0
+pointer 44,19 buttons=2
+pointer 44,19 buttons=0
+# DoubleClick { coordinate: [5, 6] }
+pointer 5,6 buttons=0
+pointer 5,6 buttons=1
+pointer 5,6 buttons=0
+pointer 5,6 buttons=1
+pointer 5,6 buttons=0
+# TripleClick { coordinate: [9, 10] }
+pointer 9,10 buttons=0
+pointer 9,10 buttons=1
+pointer 9,10 buttons=0
+pointer 9,10 buttons=1
+pointer 9,10 buttons=0
+pointer 9,10 buttons=1
+pointer 9,10 buttons=0
+# LeftClickDrag { start_coordinate: [100, 200], coordinate: [300, 250] }
+pointer 100,200 buttons=0
+pointer 100,200 buttons=1
+sleep 150
+pointer 110,203 buttons=1
+sleep 20
+pointer 120,205 buttons=1
+sleep 20
+pointer 130,208 buttons=1
+sleep 20
+pointer 140,210 buttons=1
+sleep 20
+pointer 150,213 buttons=1
+sleep 20
+pointer 160,215 buttons=1
+sleep 20
+pointer 170,218 buttons=1
+sleep 20
+pointer 180,220 buttons=1
+sleep 20
+pointer 190,223 buttons=1
+sleep 20
+pointer 200,225 buttons=1
+sleep 20
+pointer 210,228 buttons=1
+sleep 20
+pointer 220,230 buttons=1
+sleep 20
+pointer 230,233 buttons=1
+sleep 20
+pointer 240,235 buttons=1
+sleep 20
+pointer 250,238 buttons=1
+sleep 20
+pointer 260,240 buttons=1
+sleep 20
+pointer 270,243 buttons=1
+sleep 20
+pointer 280,245 buttons=1
+sleep 20
+pointer 290,248 buttons=1
+sleep 20
+pointer 300,250 buttons=1
+sleep 150
+pointer 300,250 buttons=0
+# Scroll { coordinate: [3, 4], scroll_direction: Down, scroll_amount: 2 }
+pointer 3,4 buttons=0
+pointer 3,4 buttons=16
+pointer 3,4 buttons=0
+pointer 3,4 buttons=16
+pointer 3,4 buttons=0
+# Scroll { coordinate: [3, 4], scroll_direction: Up, scroll_amount: 1 }
+pointer 3,4 buttons=0
+pointer 3,4 buttons=8
+pointer 3,4 buttons=0
+# Type { text: "Hi!\n\t" }
+key 0x48 down
+key 0x48 up
+key 0x69 down
+key 0x69 up
+key 0x21 down
+key 0x21 up
+key 0xff0d down
+key 0xff0d up
+key 0xff09 down
+key 0xff09 up
+# Key { text: "ctrl+shift+t" }
+key 0xffe3 down
+key 0xffe1 down
+key 0x74 down
+key 0x74 up
+key 0xffe1 up
+key 0xffe3 up
+# Wait { duration: 0.25 }
+sleep 250
+# Screenshot
+
+# CursorPosition
+"#;
 
     #[test]
     fn an_unknown_key_name_is_an_error_not_a_dropped_keypress() {

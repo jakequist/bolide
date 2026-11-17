@@ -55,6 +55,7 @@ use bolide_rfb::{Error as RfbError, Framebuffer, Session};
 use serde::de::DeserializeOwned;
 
 use crate::actions::{execute, plan, ActionError, PlanContext, RfbOp};
+use crate::humanized::{plan_humanized, PointerMode, SeededRandom};
 use crate::image::encode_png;
 use crate::wire::{
     ClipboardRequest, ClipboardResponse, ComputerAction, ComputerResponse, ErrorCode,
@@ -101,11 +102,22 @@ struct AppState {
     /// taken once: RFB has no message that asks a server where the pointer is, so this
     /// record is the only answer `cursor_position` can give, and a record updated
     /// outside the lock would be a third caller's position.
-    hands: tokio::sync::Mutex<[i32; 2]>,
+    hands: tokio::sync::Mutex<Hands>,
     /// When the last pointer or key event went to the desktop, if one has since the last
     /// screenshot, on `config.clock`. The next screenshot lets `config.input_settle` pass
     /// since then and waits [`AFTER_INPUT_WAIT`] for the update that shows it.
     last_input: std::sync::Mutex<Option<Instant>>,
+}
+
+/// What the hands remember from one action to the next.
+struct Hands {
+    /// bolide's own last PointerEvent; `[0, 0]` until there has been one.
+    cursor: [i32; 2],
+    /// Whether bolide has sent a PointerEvent yet. Until it has, a humanized pointer
+    /// starts from the centre of the screen.
+    moved: bool,
+    /// The session's one random stream, for a humanized pointer.
+    random: SeededRandom,
 }
 
 // ------------------------------------------------------------------------- errors
@@ -299,26 +311,39 @@ fn to_image(frame: &Framebuffer) -> Result<Image, ApiError> {
 async fn computer(State(state): State<Arc<AppState>>, body: Bytes) -> Result<Response, ApiError> {
     let action: ComputerAction = parse_body(&body)?;
     let (width, height) = state.session.size();
-    let ops = plan(
-        &action,
-        PlanContext {
-            width,
-            height,
-            drag: state.config.drag,
-        },
-    )?;
+    let ctx = PlanContext {
+        width,
+        height,
+        drag: state.config.drag,
+    };
 
     // One action at a time, start to finish — see `AppState::hands`. The guard also
     // carries the cursor, and `execute` writes through it as the pointer moves, so a
-    // run that fails part way still records where the pointer actually got to.
+    // run that fails part way still records where the pointer actually got to. A
+    // humanized plan is made under it too: it starts from that cursor and draws from the
+    // session's one stream, and neither may move under it.
     let mut hands = state.hands.lock().await;
+    let ops = match state.config.pointer {
+        PointerMode::Direct => plan(&action, ctx)?,
+        PointerMode::Humanized => {
+            let Hands {
+                cursor: [x, y],
+                moved,
+                random,
+            } = &mut *hands;
+            // A cursor bolide set is a PointerEvent it sent, so it fits a u16.
+            let from = moved.then(|| (*x as u16, *y as u16));
+            plan_humanized(&action, ctx, from, random)?
+        }
+    };
     let input = ops
         .iter()
         .any(|op| matches!(op, RfbOp::Pointer { .. } | RfbOp::Key { .. }));
+    hands.moved |= ops.iter().any(|op| matches!(op, RfbOp::Pointer { .. }));
     let outcome = execute(
         state.session.as_ref(),
         &ops,
-        &mut hands,
+        &mut hands.cursor,
         state.config.clock.as_ref(),
     )
     .await;
@@ -331,7 +356,7 @@ async fn computer(State(state): State<Arc<AppState>>, body: Bytes) -> Result<Res
             .expect("the input record is never held across a panic") =
             Some(state.config.clock.now());
     }
-    let cursor = *hands;
+    let cursor = hands.cursor;
     drop(hands);
     outcome.map_err(from_rfb)?;
 
@@ -428,10 +453,15 @@ async fn require_token(
 
 /// Build the router. See the module docs for the routes.
 pub(crate) fn router(session: Arc<dyn Session>, config: ServerConfig) -> Router {
+    let seed = config.seed;
     let state = Arc::new(AppState {
         session,
         config,
-        hands: tokio::sync::Mutex::new([0, 0]),
+        hands: tokio::sync::Mutex::new(Hands {
+            cursor: [0, 0],
+            moved: false,
+            random: SeededRandom::new(seed),
+        }),
         last_input: std::sync::Mutex::new(None),
     });
 
