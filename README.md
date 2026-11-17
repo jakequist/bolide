@@ -117,7 +117,7 @@ Then `bolide screenshot --out /tmp/s.png` and look at it.
 `connect` options: `--username U`, `--password PW`, `--password-file F` (or the
 `BOLIDE_PASSWORD` environment variable), `--auth auto|ard|vnc`, `--listen ADDR`,
 `--token T`, `--foreground`, `--record FILE`, `--record-fps N` and `--action-log FILE`
-(below), `--pointer direct|humanized` and
+(below), `--pointer direct|humanized`, `--typing direct|humanized` and
 `--seed N` (below), and the timing knobs `--drag-steps N`, `--drag-step-ms MS`,
 `--drag-dwell-ms MS` (how a direct drag walks) and `--settle-ms MS` (how long a
 screenshot after input lets the app redraw). Credentials can also ride in the URL:
@@ -141,13 +141,37 @@ Every move starts from where bolide last left the pointer (from the centre of th
 screen before its first one), so the pointer never jumps. Each act takes longer: about
 half a second for a click near the pointer, about a second for one across half the
 screen, up to two seconds corner to corner. The drag flags above pace a direct drag only;
-a humanized drag paces itself and ignores them. Typing and keys are the same in both
-modes.
+a humanized drag paces itself and ignores them. Typing and keys follow `--typing`, below.
 
 The randomness comes from one seeded stream per session: `--seed N` makes a session's
 pointer move the same way each time it does the same things. Without `--seed`, `connect`
 picks one and prints it. The movement is a port of meteor's humanized interaction
 (`desktops/interaction`), with its constants.
+
+## Typing like a person
+
+By default typing is `direct`: a `type` sends each character's key down and up at once,
+with no wait between keys. `bolide connect --typing humanized` types like a person
+instead. It covers `type` and `key` only; the pointer acts follow `--pointer`.
+
+- the wait between keys is log-normal around 150 ms, at a pace that wanders from word to
+  word; common letter pairs (`th`, `er`, …) come faster, a space and the key after it
+  slower, and anything but a letter slower still; now and then (3% of keys) there is a
+  pause of 300 to 900 ms;
+- each key is held 70 to 130 ms, and a key may still be down when the next goes down, but
+  only when neither needs a Shift and they are different keys, so the text cannot change;
+- a `key` chord presses its modifiers a little apart, waits, holds the key, and lets the
+  modifiers go in reverse.
+
+The keys that arrive are the same as `direct`'s, one down and one up per character, so
+the text is exactly the text asked for. The cost is time: about 5 characters a second,
+so a 100-character line takes about 19.5 s (measured: the mean over 200 seeds of a
+100-character line of prose is 19.5 s, 5.1 characters a second). A request returns
+once its last key has gone out, so a client waits that long, and an action log's `type`
+line spans it. `--seed N` covers typing too: the pointer and the typing draw from the
+one stream, act by act, and with `--typing direct` a seed moves the pointer exactly as
+it did before. The typing is a port of meteor's humanized typing, with its constants;
+meteor's optional typos are not ported.
 
 ## Recording a session
 
@@ -183,7 +207,7 @@ written as it was sent, so keep the file as private as what was typed.
 The first line is a header:
 
 ```json
-{"bolide":"0.2.0","desktop":{"width":1280,"height":800},"connected":"2026-11-17T10:00:00.120Z","record":{"file":"/runs/run.mp4","fps":30,"start":"2026-11-17T10:00:00.164Z"},"pointer":"humanized"}
+{"bolide":"0.2.0","desktop":{"width":1280,"height":800},"connected":"2026-11-17T10:00:00.120Z","record":{"file":"/runs/run.mp4","fps":30,"start":"2026-11-17T10:00:00.164Z"},"pointer":"humanized","typing":"direct"}
 ```
 
 `record` is `null` without `--record`. Then one line for each `/computer` action,
@@ -201,7 +225,8 @@ The first line is a header:
   screenshot's query (`{"format":"json"}`). A body that is not a JSON object is
   `{"body":"…"}`.
 - `start` and `end` are UTC, to the millisecond: when bolide began on the request and
-  when it had the answer. `startS` and `endS` are the same times in seconds from the
+  when it had the answer. An act that sends input has its answer once its last pointer
+  or key event has gone out to the desktop, so `end` is at or after it. `startS` and `endS` are the same times in seconds from the
   recording's first frame with `--record`, so they are positions in the video, and from
   the connect without it. All of them come from one monotonic clock, so a wall clock
   that is changed mid-session does not reorder them.

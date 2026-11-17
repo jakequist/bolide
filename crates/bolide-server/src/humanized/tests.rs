@@ -502,6 +502,76 @@ fn the_same_seed_plans_the_same_ops_for_the_same_acts() {
     assert_ne!(session(1), session(2));
 }
 
+/// A session of pointer acts with typing and keys between them, from seed 1.
+fn mixed_session() -> Vec<ComputerAction> {
+    vec![
+        click(300, 200),
+        ComputerAction::Type {
+            text: "Hi, Bob!\n".into(),
+        },
+        ComputerAction::LeftClickDrag {
+            start_coordinate: [300, 200],
+            coordinate: [900, 700],
+        },
+        ComputerAction::Key {
+            text: "ctrl+a".into(),
+        },
+        scroll(800, 500, ScrollDirection::Down, 3),
+        ComputerAction::Type { text: "ok".into() },
+        mv(10, 10),
+    ]
+}
+
+/// Every op of a whole session, one line each: `pointer x,y buttons=b`, `key 0xKEYSYM
+/// down|up`, `sleep MS`, and `# act` before each act's.
+fn session_timeline(
+    acts: &[ComputerAction],
+    seed: u32,
+    plan_one: impl Fn(&ComputerAction, Option<(u16, u16)>, &mut SeededRandom) -> Vec<RfbOp>,
+) -> String {
+    let mut random = SeededRandom::new(seed);
+    let mut from = None;
+    let mut out = String::new();
+    for act in acts {
+        let ops = plan_one(act, from, &mut random);
+        from = last_pointer(&ops).or(from);
+        out.push_str(&format!("# {act:?}\n"));
+        for op in ops {
+            out.push_str(&match op {
+                RfbOp::Pointer { x, y, buttons } => format!("pointer {x},{y} buttons={buttons}"),
+                RfbOp::Key { keysym, down } => {
+                    format!("key {keysym:#x} {}", if down { "down" } else { "up" })
+                }
+                RfbOp::Sleep { ms } => format!("sleep {ms}"),
+            });
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// The golden of a humanized pointer under seed 1, with typing and keys between its acts,
+/// written before humanized typing existed: with typing direct, a seed still moves the
+/// pointer exactly as it did, and the keys are direct's.
+#[test]
+fn a_seed_moves_the_pointer_exactly_as_it_always_has_around_typing() {
+    let timeline = session_timeline(&mixed_session(), 1, |act, from, random| {
+        plan_input(
+            act,
+            CTX,
+            PointerMode::Humanized,
+            TypingMode::Direct,
+            from,
+            random,
+        )
+        .expect("planned")
+    });
+    assert_eq!(
+        timeline.trim(),
+        include_str!("golden-pointer-seed-1.txt").trim()
+    );
+}
+
 fn last_pointer(ops: &[RfbOp]) -> Option<(u16, u16)> {
     ops.iter().rev().find_map(|op| match *op {
         RfbOp::Pointer { x, y, .. } => Some((x, y)),

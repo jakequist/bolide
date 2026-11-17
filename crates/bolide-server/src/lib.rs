@@ -46,7 +46,9 @@ pub use action_log::{
     ActionLog, LoggedRequest, CLIPBOARD_GET, CLIPBOARD_SET, COMPUTER, SCREENSHOT,
 };
 pub use actions::{execute, plan, ActionError, Clock, DragPacing, PlanContext, RfbOp, TokioClock};
-pub use humanized::{plan_humanized, PointerMode, SeededRandom};
+pub use humanized::{
+    plan_humanized, plan_input, plan_typing, PointerMode, SeededRandom, TypingMode,
+};
 pub use image::encode_png;
 
 /// How to run the server.
@@ -55,9 +57,12 @@ pub struct ServerConfig {
     /// How the pointer moves. Default [`PointerMode::Direct`], bolide's behaviour before
     /// humanized input; the CLI's `--pointer` sets it.
     pub pointer: PointerMode,
-    /// The seed of the one random stream a humanized pointer draws from, for the whole
-    /// session: the same seed and the same acts send the same events. Unused in direct
-    /// mode.
+    /// How `type` and `key` are typed. Default [`TypingMode::Direct`], bolide's behaviour
+    /// before humanized input; the CLI's `--typing` sets it.
+    pub typing: TypingMode,
+    /// The seed of the one random stream a humanized pointer and humanized typing draw
+    /// from, act by act, for the whole session: the same seed and the same acts send the
+    /// same events. Unused when both are direct.
     pub seed: u32,
     /// How `left_click_drag` walks from its start to its end, in direct mode. Default
     /// [`DragPacing::DEFAULT`]. A humanized drag paces itself and ignores this.
@@ -92,6 +97,7 @@ impl Default for ServerConfig {
             remote: String::new(),
             frame_timeout: Duration::from_secs(5),
             pointer: PointerMode::Direct,
+            typing: TypingMode::Direct,
             seed: 0,
             drag: DragPacing::DEFAULT,
             clock: Arc::new(TokioClock),

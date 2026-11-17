@@ -372,6 +372,15 @@ async fn writer_task<W>(
         let bytes = match command {
             Command::Write(bytes) => bytes,
             Command::Request { incremental } => inner.build_request(incremental),
+            Command::Flush(done) => {
+                if let Err(e) = w.flush().await {
+                    inner.mark_dead(Some(e.to_string()));
+                    break;
+                }
+                // The caller may have stopped waiting; that is its business.
+                let _ = done.send(());
+                continue;
+            }
         };
         if let Err(e) = w.write_all(&bytes).await {
             inner.mark_dead(Some(e.to_string()));

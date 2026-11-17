@@ -325,6 +325,14 @@ pub trait Session: Send + Sync {
     /// Send a KeyEvent.
     async fn key(&self, keysym: u32, down: bool) -> Result<()>;
 
+    /// Wait until every event sent before this call has been written to the desktop's
+    /// connection.
+    ///
+    /// [`Session::pointer`], [`Session::key`] and [`Session::cut_text`] return once the
+    /// event is queued, not once it has gone out. A caller that answers "done" — an
+    /// HTTP reply, an action log's end time — flushes first, so "done" is true.
+    async fn flush(&self) -> Result<()>;
+
     /// Send ClientCutText: replace the remote clipboard.
     async fn cut_text(&self, text: &str) -> Result<()>;
 

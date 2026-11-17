@@ -233,7 +233,7 @@ fn drag(start: (u16, u16), end: (u16, u16), pacing: DragPacing) -> Vec<RfbOp> {
 /// `keysym_for_char` maps a Latin-1 code point to itself, and `\n` (0x0a) is not a key
 /// — `Return` (0xff0d) is. The three names come from `bolide_rfb::keysym`; this does not
 /// hold a table of its own.
-fn keysym_for_typed(c: char) -> std::result::Result<u32, UnknownKey> {
+pub(crate) fn keysym_for_typed(c: char) -> std::result::Result<u32, UnknownKey> {
     let named = match c {
         '\n' | '\r' => "Return",
         '\t' => "Tab",
@@ -361,21 +361,34 @@ pub fn plan(
 ///
 /// Every [`RfbOp::Sleep`] is spent on `clock`, which is how a test sees a drag's pacing
 /// without waiting it out.
+///
+/// It returns only once every event it sent has been written to the desktop
+/// ([`Session::flush`]): a session's `pointer` and `key` only queue an event, and the
+/// caller's "done" — an HTTP answer, an action log's end — must come after the last one
+/// has gone out, not before.
 pub async fn execute(
     session: &dyn Session,
     ops: &[RfbOp],
     cursor: &mut [i32; 2],
     clock: &dyn Clock,
 ) -> bolide_rfb::Result<()> {
+    let mut sent = false;
     for op in ops {
         match *op {
             RfbOp::Pointer { x, y, buttons } => {
                 session.pointer(x, y, buttons).await?;
                 *cursor = [i32::from(x), i32::from(y)];
+                sent = true;
             }
-            RfbOp::Key { keysym, down } => session.key(keysym, down).await?,
+            RfbOp::Key { keysym, down } => {
+                session.key(keysym, down).await?;
+                sent = true;
+            }
             RfbOp::Sleep { ms } => clock.sleep(Duration::from_millis(ms)).await,
         }
+    }
+    if sent {
+        session.flush().await?;
     }
     Ok(())
 }
@@ -1042,6 +1055,136 @@ sleep 250
 # Screenshot
 
 # CursorPosition
+"#;
+
+    /// The golden of the direct planner's key events: plain text, shifted characters,
+    /// repeated letters, a newline and a tab, a chord and single named keys, as the exact
+    /// ops bolide sends. Written before humanized typing existed, so `--typing direct` is
+    /// held to type exactly what bolide always typed.
+    #[test]
+    fn the_direct_planner_types_and_presses_keys_exactly_as_it_always_has() {
+        let acts = [
+            ComputerAction::Type {
+                text: "hello world".into(),
+            },
+            ComputerAction::Type {
+                text: "Hi, Bob! (42% off?)".into(),
+            },
+            ComputerAction::Type {
+                text: "aab\nc\t".into(),
+            },
+            ComputerAction::Key {
+                text: "ctrl+shift+t".into(),
+            },
+            ComputerAction::Key {
+                text: "ctrl+a".into(),
+            },
+            ComputerAction::Key {
+                text: "Return".into(),
+            },
+            ComputerAction::Key { text: "a".into() },
+        ];
+        let golden: Vec<String> = acts
+            .iter()
+            .map(|act| format!("# {act:?}\n{}", timeline(&ops(act.clone()))))
+            .collect();
+        assert_eq!(golden.join("\n").trim(), DIRECT_KEYS_GOLDEN.trim());
+    }
+
+    const DIRECT_KEYS_GOLDEN: &str = r#"
+# Type { text: "hello world" }
+key 0x68 down
+key 0x68 up
+key 0x65 down
+key 0x65 up
+key 0x6c down
+key 0x6c up
+key 0x6c down
+key 0x6c up
+key 0x6f down
+key 0x6f up
+key 0x20 down
+key 0x20 up
+key 0x77 down
+key 0x77 up
+key 0x6f down
+key 0x6f up
+key 0x72 down
+key 0x72 up
+key 0x6c down
+key 0x6c up
+key 0x64 down
+key 0x64 up
+# Type { text: "Hi, Bob! (42% off?)" }
+key 0x48 down
+key 0x48 up
+key 0x69 down
+key 0x69 up
+key 0x2c down
+key 0x2c up
+key 0x20 down
+key 0x20 up
+key 0x42 down
+key 0x42 up
+key 0x6f down
+key 0x6f up
+key 0x62 down
+key 0x62 up
+key 0x21 down
+key 0x21 up
+key 0x20 down
+key 0x20 up
+key 0x28 down
+key 0x28 up
+key 0x34 down
+key 0x34 up
+key 0x32 down
+key 0x32 up
+key 0x25 down
+key 0x25 up
+key 0x20 down
+key 0x20 up
+key 0x6f down
+key 0x6f up
+key 0x66 down
+key 0x66 up
+key 0x66 down
+key 0x66 up
+key 0x3f down
+key 0x3f up
+key 0x29 down
+key 0x29 up
+# Type { text: "aab\nc\t" }
+key 0x61 down
+key 0x61 up
+key 0x61 down
+key 0x61 up
+key 0x62 down
+key 0x62 up
+key 0xff0d down
+key 0xff0d up
+key 0x63 down
+key 0x63 up
+key 0xff09 down
+key 0xff09 up
+# Key { text: "ctrl+shift+t" }
+key 0xffe3 down
+key 0xffe1 down
+key 0x74 down
+key 0x74 up
+key 0xffe1 up
+key 0xffe3 up
+# Key { text: "ctrl+a" }
+key 0xffe3 down
+key 0x61 down
+key 0x61 up
+key 0xffe3 up
+# Key { text: "Return" }
+key 0xff0d down
+key 0xff0d up
+# Key { text: "a" }
+key 0x61 down
+key 0x61 up
 "#;
 
     #[test]

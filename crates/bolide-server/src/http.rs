@@ -61,8 +61,8 @@ use serde::de::DeserializeOwned;
 use crate::action_log::{
     describe_clipboard_set, describe_computer, describe_screenshot, LoggedRequest, CLIPBOARD_GET,
 };
-use crate::actions::{execute, plan, ActionError, PlanContext, RfbOp};
-use crate::humanized::{plan_humanized, PointerMode, SeededRandom};
+use crate::actions::{execute, ActionError, PlanContext, RfbOp};
+use crate::humanized::{plan_input, SeededRandom};
 use crate::image::encode_png;
 use crate::wire::{
     ClipboardRequest, ClipboardResponse, ComputerAction, ComputerResponse, ErrorCode,
@@ -123,7 +123,7 @@ struct Hands {
     /// Whether bolide has sent a PointerEvent yet. Until it has, a humanized pointer
     /// starts from the centre of the screen.
     moved: bool,
-    /// The session's one random stream, for a humanized pointer.
+    /// The session's one random stream, for a humanized pointer and humanized typing.
     random: SeededRandom,
 }
 
@@ -369,18 +369,22 @@ async fn computer_act(state: &AppState, body: &Bytes) -> Result<Response, ApiErr
     // humanized plan is made under it too: it starts from that cursor and draws from the
     // session's one stream, and neither may move under it.
     let mut hands = state.hands.lock().await;
-    let ops = match state.config.pointer {
-        PointerMode::Direct => plan(&action, ctx)?,
-        PointerMode::Humanized => {
-            let Hands {
-                cursor: [x, y],
-                moved,
-                random,
-            } = &mut *hands;
-            // A cursor bolide set is a PointerEvent it sent, so it fits a u16.
-            let from = moved.then(|| (*x as u16, *y as u16));
-            plan_humanized(&action, ctx, from, random)?
-        }
+    let ops = {
+        let Hands {
+            cursor: [x, y],
+            moved,
+            random,
+        } = &mut *hands;
+        // A cursor bolide set is a PointerEvent it sent, so it fits a u16.
+        let from = moved.then(|| (*x as u16, *y as u16));
+        plan_input(
+            &action,
+            ctx,
+            state.config.pointer,
+            state.config.typing,
+            from,
+            random,
+        )?
     };
     let input = ops
         .iter()

@@ -308,7 +308,7 @@ fn disconnect() -> Result<(), CliError> {
 }
 
 async fn connect(mut args: ConnectArgs) -> Result<(), CliError> {
-    if args.pointer == bolide_server::PointerMode::Humanized {
+    if args.seeded() {
         // Chosen here, before any re-exec, so the daemon gets it as `--seed` and the
         // terminal that started the session can print it.
         args.seed = Some(args.pointer_seed(fresh_seed));
@@ -431,6 +431,7 @@ async fn serve_foreground(
                 width,
                 height,
                 pointer: args.pointer,
+                typing: args.typing,
                 recording: recording.as_ref().map(|r| action_log::RecordingInfo {
                     file: r.path().to_path_buf(),
                     fps: r.fps(),
@@ -453,6 +454,7 @@ async fn serve_foreground(
             token: args.token.clone(),
             remote: remote.clone(),
             pointer: args.pointer,
+            typing: args.typing,
             seed,
             drag: args.drag_pacing(),
             input_settle: args.input_settle(),
@@ -520,10 +522,14 @@ fn action_log_failure(path: &Path, e: std::io::Error) -> CliError {
     ))
 }
 
-/// A humanized pointer's seed, so a session's movements can be replayed with `--seed`.
+/// A humanized session's seed, so its movements and typing can be replayed with `--seed`.
 fn print_pointer(args: &ConnectArgs) {
-    if let (bolide_server::PointerMode::Humanized, Some(seed)) = (args.pointer, args.seed) {
-        println!("pointer: {} (seed {seed})", args.pointer.as_str());
+    if let (true, Some(seed)) = (args.seeded(), args.seed) {
+        println!(
+            "pointer: {}, typing: {} (seed {seed})",
+            args.pointer.as_str(),
+            args.typing.as_str()
+        );
     }
 }
 

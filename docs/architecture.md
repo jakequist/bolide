@@ -93,7 +93,15 @@ function, not integration tests. `plan_humanized`, for `--pointer humanized`, is
 shape with two more inputs: where the pointer is, and the session's seeded random stream
 (`SeededRandom`, meteor's mulberry32). The same seed from the same place gives the same
 ops, so its paths, pauses and overshoots are asserted on bytes too, and
-`humanized/score.rs` scores them with meteor's bot-score fixture.
+`humanized/score.rs` scores them with meteor's bot-score fixture. `plan_typing`, for
+`--typing humanized`, plans `type` and `key` from the same stream, and `plan_input` picks
+between the three by the session's two modes; direct typing draws nothing, so a seed's
+pointer paths do not depend on it.
+
+**`execute` returns once the events have gone out.** A `Session`'s `pointer` and `key`
+only queue an event for the writer task; `execute` ends with `Session::flush`, which
+returns once everything queued before it has been written, so an answer, and an action
+log's `end`, come after the last event, not before.
 
 **`bolide_server::Clock` is where time is spent.** A drag's pauses, a `wait` and the
 settling before a screenshot that follows input all go through the `clock` in

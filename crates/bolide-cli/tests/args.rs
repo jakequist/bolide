@@ -4,10 +4,10 @@ use std::path::PathBuf;
 
 use bolide_cli::cli::{
     command_line_credentials, parse_args, parse_target, redact_password, Button, Command,
-    ConnectArgs, Dir, Target, POINTER_FLAG,
+    ConnectArgs, Dir, Target, POINTER_FLAG, TYPING_FLAG,
 };
 use bolide_cli::error::{Stream, EXIT_USAGE};
-use bolide_server::{DragPacing, PointerMode};
+use bolide_server::{DragPacing, PointerMode, TypingMode};
 
 fn args(line: &[&str]) -> Vec<String> {
     std::iter::once("bolide")
@@ -134,6 +134,83 @@ fn connect_help_names_the_pointer_modes() {
     assert!(err.message.contains(&pointer_flag()), "{}", err.message);
     for name in PointerMode::NAMES {
         assert!(err.message.contains(name), "{name}: {}", err.message);
+    }
+}
+
+/// `--typing` spelled through its one constant, so renaming the flag changes no test.
+fn typing_flag() -> String {
+    format!("--{TYPING_FLAG}")
+}
+
+#[test]
+fn typing_is_direct_unless_asked_otherwise() {
+    assert_eq!(
+        connect_args(&["connect", "vnc://h"]).typing,
+        TypingMode::Direct
+    );
+    assert_eq!(
+        connect_args(&["connect", "vnc://h", &typing_flag(), "direct"]).typing,
+        TypingMode::Direct
+    );
+}
+
+#[test]
+fn connect_takes_humanized_typing_and_a_seed() {
+    let c = connect_args(&[
+        "connect",
+        "vnc://h",
+        &typing_flag(),
+        "humanized",
+        "--seed",
+        "42",
+    ]);
+    assert_eq!(c.typing, TypingMode::Humanized);
+    assert_eq!(
+        c.pointer,
+        PointerMode::Direct,
+        "typing leaves the pointer alone"
+    );
+    assert_eq!(c.seed, Some(42));
+}
+
+#[test]
+fn an_unknown_typing_mode_is_a_usage_error_that_lists_the_modes() {
+    let err = parse_args(&args(&["connect", "vnc://h", &typing_flag(), "human"])).unwrap_err();
+    assert_eq!(err.code, EXIT_USAGE);
+    for name in TypingMode::NAMES {
+        assert!(err.message.contains(name), "{name}: {}", err.message);
+    }
+}
+
+#[test]
+fn connect_help_names_the_typing_modes() {
+    let err = parse_args(&args(&["connect", "--help"])).unwrap_err();
+    assert!(err.message.contains(&typing_flag()), "{}", err.message);
+    for name in TypingMode::NAMES {
+        assert!(err.message.contains(name), "{name}: {}", err.message);
+    }
+}
+
+/// A session draws from a seed when either half is humanized, and only then: `connect`
+/// picks one before the daemon starts, so the terminal can print it.
+#[test]
+fn a_session_is_seeded_when_the_pointer_or_the_typing_is_humanized() {
+    let p = pointer_flag();
+    let t = typing_flag();
+    for (line, seeded) in [
+        (vec!["connect", "vnc://h"], false),
+        (vec!["connect", "vnc://h", &p, "humanized"], true),
+        (vec!["connect", "vnc://h", &t, "humanized"], true),
+        (
+            vec!["connect", "vnc://h", &p, "humanized", &t, "humanized"],
+            true,
+        ),
+        (
+            vec!["connect", "vnc://h", &p, "direct", &t, "direct"],
+            false,
+        ),
+    ] {
+        assert_eq!(connect_args(&line).seeded(), seeded, "{line:?}");
     }
 }
 

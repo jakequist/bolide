@@ -1,0 +1,625 @@
+# LeftClick { coordinate: [300, 200] }
+sleep 10
+pointer 960,540 buttons=0
+sleep 9
+pointer 960,540 buttons=0
+sleep 11
+pointer 960,539 buttons=0
+sleep 10
+pointer 959,538 buttons=0
+sleep 10
+pointer 958,537 buttons=0
+sleep 10
+pointer 957,535 buttons=0
+sleep 11
+pointer 956,532 buttons=0
+sleep 12
+pointer 953,527 buttons=0
+sleep 10
+pointer 951,523 buttons=0
+sleep 10
+pointer 948,518 buttons=0
+sleep 10
+pointer 945,513 buttons=0
+sleep 10
+pointer 941,507 buttons=0
+sleep 9
+pointer 937,501 buttons=0
+sleep 11
+pointer 932,493 buttons=0
+sleep 9
+pointer 926,485 buttons=0
+sleep 10
+pointer 919,477 buttons=0
+sleep 10
+pointer 912,468 buttons=0
+sleep 10
+pointer 904,458 buttons=0
+sleep 11
+pointer 895,448 buttons=0
+sleep 10
+pointer 885,438 buttons=0
+sleep 12
+pointer 871,425 buttons=0
+sleep 10
+pointer 859,414 buttons=0
+sleep 10
+pointer 847,404 buttons=0
+sleep 11
+pointer 832,391 buttons=0
+sleep 8
+pointer 819,382 buttons=0
+sleep 10
+pointer 805,371 buttons=0
+sleep 11
+pointer 787,359 buttons=0
+sleep 12
+pointer 767,346 buttons=0
+sleep 8
+pointer 753,338 buttons=0
+sleep 10
+pointer 735,327 buttons=0
+sleep 11
+pointer 714,316 buttons=0
+sleep 11
+pointer 694,306 buttons=0
+sleep 10
+pointer 675,297 buttons=0
+sleep 10
+pointer 654,287 buttons=0
+sleep 11
+pointer 633,278 buttons=0
+sleep 8
+pointer 618,272 buttons=0
+sleep 10
+pointer 599,264 buttons=0
+sleep 10
+pointer 578,257 buttons=0
+sleep 12
+pointer 555,249 buttons=0
+sleep 10
+pointer 537,244 buttons=0
+sleep 9
+pointer 520,239 buttons=0
+sleep 10
+pointer 502,234 buttons=0
+sleep 12
+pointer 482,228 buttons=0
+sleep 11
+pointer 463,224 buttons=0
+sleep 9
+pointer 450,221 buttons=0
+sleep 9
+pointer 436,218 buttons=0
+sleep 11
+pointer 419,215 buttons=0
+sleep 10
+pointer 407,212 buttons=0
+sleep 11
+pointer 392,210 buttons=0
+sleep 11
+pointer 379,208 buttons=0
+sleep 9
+pointer 370,206 buttons=0
+sleep 9
+pointer 360,206 buttons=0
+sleep 13
+pointer 349,204 buttons=0
+sleep 10
+pointer 340,203 buttons=0
+sleep 8
+pointer 335,203 buttons=0
+sleep 12
+pointer 327,202 buttons=0
+sleep 10
+pointer 322,201 buttons=0
+sleep 10
+pointer 317,201 buttons=0
+sleep 11
+pointer 312,201 buttons=0
+sleep 10
+pointer 309,201 buttons=0
+sleep 10
+pointer 307,200 buttons=0
+sleep 8
+pointer 305,200 buttons=0
+sleep 11
+pointer 303,200 buttons=0
+sleep 12
+pointer 302,200 buttons=0
+sleep 10
+pointer 301,200 buttons=0
+sleep 8
+pointer 301,200 buttons=0
+sleep 11
+pointer 301,200 buttons=0
+sleep 11
+pointer 301,200 buttons=0
+sleep 74
+pointer 301,200 buttons=1
+sleep 106
+pointer 301,200 buttons=0
+# Type { text: "Hi, Bob!\n" }
+key 0x48 down
+key 0x48 up
+key 0x69 down
+key 0x69 up
+key 0x2c down
+key 0x2c up
+key 0x20 down
+key 0x20 up
+key 0x42 down
+key 0x42 up
+key 0x6f down
+key 0x6f up
+key 0x62 down
+key 0x62 up
+key 0x21 down
+key 0x21 up
+key 0xff0d down
+key 0xff0d up
+# LeftClickDrag { start_coordinate: [300, 200], coordinate: [900, 700] }
+sleep 83
+pointer 301,200 buttons=1
+sleep 153
+pointer 301,200 buttons=1
+sleep 13
+pointer 301,200 buttons=1
+sleep 14
+pointer 301,201 buttons=1
+sleep 12
+pointer 301,201 buttons=1
+sleep 11
+pointer 301,202 buttons=1
+sleep 13
+pointer 302,204 buttons=1
+sleep 12
+pointer 302,206 buttons=1
+sleep 12
+pointer 303,208 buttons=1
+sleep 12
+pointer 303,211 buttons=1
+sleep 11
+pointer 304,213 buttons=1
+sleep 14
+pointer 305,218 buttons=1
+sleep 11
+pointer 305,221 buttons=1
+sleep 13
+pointer 307,226 buttons=1
+sleep 11
+pointer 308,231 buttons=1
+sleep 12
+pointer 309,237 buttons=1
+sleep 14
+pointer 312,244 buttons=1
+sleep 10
+pointer 314,249 buttons=1
+sleep 12
+pointer 317,257 buttons=1
+sleep 14
+pointer 320,265 buttons=1
+sleep 10
+pointer 323,273 buttons=1
+sleep 14
+pointer 327,282 buttons=1
+sleep 11
+pointer 332,290 buttons=1
+sleep 11
+pointer 336,299 buttons=1
+sleep 13
+pointer 342,309 buttons=1
+sleep 12
+pointer 348,319 buttons=1
+sleep 11
+pointer 354,329 buttons=1
+sleep 15
+pointer 362,341 buttons=1
+sleep 10
+pointer 368,351 buttons=1
+sleep 11
+pointer 375,362 buttons=1
+sleep 14
+pointer 386,374 buttons=1
+sleep 12
+pointer 395,386 buttons=1
+sleep 10
+pointer 402,396 buttons=1
+sleep 12
+pointer 412,407 buttons=1
+sleep 12
+pointer 424,419 buttons=1
+sleep 13
+pointer 436,432 buttons=1
+sleep 14
+pointer 449,445 buttons=1
+sleep 9
+pointer 459,455 buttons=1
+sleep 16
+pointer 476,469 buttons=1
+sleep 9
+pointer 486,480 buttons=1
+sleep 12
+pointer 498,490 buttons=1
+sleep 12
+pointer 512,501 buttons=1
+sleep 14
+pointer 528,513 buttons=1
+sleep 12
+pointer 543,524 buttons=1
+sleep 10
+pointer 554,533 buttons=1
+sleep 14
+pointer 573,546 buttons=1
+sleep 10
+pointer 586,554 buttons=1
+sleep 14
+pointer 601,565 buttons=1
+sleep 11
+pointer 615,574 buttons=1
+sleep 11
+pointer 628,581 buttons=1
+sleep 14
+pointer 645,592 buttons=1
+sleep 10
+pointer 657,598 buttons=1
+sleep 13
+pointer 671,606 buttons=1
+sleep 13
+pointer 688,616 buttons=1
+sleep 13
+pointer 701,623 buttons=1
+sleep 11
+pointer 714,630 buttons=1
+sleep 11
+pointer 725,635 buttons=1
+sleep 13
+pointer 740,642 buttons=1
+sleep 13
+pointer 752,647 buttons=1
+sleep 10
+pointer 762,652 buttons=1
+sleep 15
+pointer 777,657 buttons=1
+sleep 12
+pointer 787,662 buttons=1
+sleep 10
+pointer 795,665 buttons=1
+sleep 11
+pointer 805,669 buttons=1
+sleep 13
+pointer 815,672 buttons=1
+sleep 15
+pointer 826,677 buttons=1
+sleep 10
+pointer 832,679 buttons=1
+sleep 11
+pointer 841,682 buttons=1
+sleep 14
+pointer 848,685 buttons=1
+sleep 10
+pointer 854,686 buttons=1
+sleep 14
+pointer 861,688 buttons=1
+sleep 13
+pointer 867,690 buttons=1
+sleep 10
+pointer 872,692 buttons=1
+sleep 12
+pointer 876,693 buttons=1
+sleep 13
+pointer 880,695 buttons=1
+sleep 11
+pointer 884,695 buttons=1
+sleep 12
+pointer 888,697 buttons=1
+sleep 14
+pointer 890,698 buttons=1
+sleep 10
+pointer 892,698 buttons=1
+sleep 12
+pointer 894,698 buttons=1
+sleep 14
+pointer 896,699 buttons=1
+sleep 13
+pointer 897,699 buttons=1
+sleep 10
+pointer 898,700 buttons=1
+sleep 11
+pointer 899,700 buttons=1
+sleep 13
+pointer 899,700 buttons=1
+sleep 14
+pointer 900,700 buttons=1
+sleep 10
+pointer 900,700 buttons=1
+sleep 13
+pointer 900,700 buttons=1
+sleep 12
+pointer 900,700 buttons=1
+sleep 104
+pointer 900,700 buttons=0
+# Key { text: "ctrl+a" }
+key 0xffe3 down
+key 0x61 down
+key 0x61 up
+key 0xffe3 up
+# Scroll { coordinate: [800, 500], scroll_direction: Down, scroll_amount: 3 }
+sleep 13
+pointer 900,700 buttons=0
+sleep 12
+pointer 900,700 buttons=0
+sleep 11
+pointer 900,700 buttons=0
+sleep 11
+pointer 900,700 buttons=0
+sleep 14
+pointer 900,699 buttons=0
+sleep 12
+pointer 900,698 buttons=0
+sleep 12
+pointer 900,697 buttons=0
+sleep 11
+pointer 899,696 buttons=0
+sleep 14
+pointer 900,694 buttons=0
+sleep 9
+pointer 900,692 buttons=0
+sleep 13
+pointer 899,688 buttons=0
+sleep 14
+pointer 898,684 buttons=0
+sleep 12
+pointer 898,680 buttons=0
+sleep 11
+pointer 897,677 buttons=0
+sleep 11
+pointer 897,672 buttons=0
+sleep 14
+pointer 896,665 buttons=0
+sleep 9
+pointer 895,660 buttons=0
+sleep 13
+pointer 893,653 buttons=0
+sleep 12
+pointer 891,646 buttons=0
+sleep 12
+pointer 889,638 buttons=0
+sleep 13
+pointer 886,630 buttons=0
+sleep 11
+pointer 883,623 buttons=0
+sleep 14
+pointer 880,612 buttons=0
+sleep 13
+pointer 876,604 buttons=0
+sleep 11
+pointer 873,595 buttons=0
+sleep 12
+pointer 869,587 buttons=0
+sleep 12
+pointer 864,578 buttons=0
+sleep 13
+pointer 858,570 buttons=0
+sleep 11
+pointer 854,562 buttons=0
+sleep 13
+pointer 848,555 buttons=0
+sleep 12
+pointer 843,548 buttons=0
+sleep 10
+pointer 840,541 buttons=0
+sleep 12
+pointer 834,535 buttons=0
+sleep 13
+pointer 829,529 buttons=0
+sleep 11
+pointer 825,524 buttons=0
+sleep 14
+pointer 819,519 buttons=0
+sleep 12
+pointer 815,514 buttons=0
+sleep 10
+pointer 812,510 buttons=0
+sleep 12
+pointer 809,508 buttons=0
+sleep 14
+pointer 806,505 buttons=0
+sleep 9
+pointer 805,503 buttons=0
+sleep 16
+pointer 802,501 buttons=0
+sleep 10
+pointer 802,500 buttons=0
+sleep 13
+pointer 801,500 buttons=0
+sleep 11
+pointer 800,499 buttons=0
+sleep 13
+pointer 800,499 buttons=0
+sleep 11
+pointer 800,499 buttons=0
+sleep 90
+pointer 800,499 buttons=16
+sleep 5
+pointer 800,499 buttons=0
+sleep 60
+pointer 800,499 buttons=16
+sleep 7
+pointer 800,499 buttons=0
+sleep 59
+pointer 800,499 buttons=16
+sleep 5
+pointer 800,499 buttons=0
+# Type { text: "ok" }
+key 0x6f down
+key 0x6f up
+key 0x6b down
+key 0x6b up
+# MouseMove { coordinate: [10, 10] }
+sleep 8
+pointer 800,499 buttons=0
+sleep 10
+pointer 800,499 buttons=0
+sleep 7
+pointer 799,499 buttons=0
+sleep 9
+pointer 798,498 buttons=0
+sleep 8
+pointer 797,498 buttons=0
+sleep 8
+pointer 795,497 buttons=0
+sleep 7
+pointer 792,497 buttons=0
+sleep 10
+pointer 788,495 buttons=0
+sleep 8
+pointer 784,494 buttons=0
+sleep 9
+pointer 778,492 buttons=0
+sleep 7
+pointer 773,491 buttons=0
+sleep 10
+pointer 765,488 buttons=0
+sleep 7
+pointer 759,486 buttons=0
+sleep 8
+pointer 750,483 buttons=0
+sleep 8
+pointer 741,480 buttons=0
+sleep 8
+pointer 732,477 buttons=0
+sleep 10
+pointer 718,472 buttons=0
+sleep 7
+pointer 709,469 buttons=0
+sleep 9
+pointer 696,464 buttons=0
+sleep 9
+pointer 681,458 buttons=0
+sleep 9
+pointer 667,453 buttons=0
+sleep 6
+pointer 656,449 buttons=0
+sleep 9
+pointer 641,443 buttons=0
+sleep 9
+pointer 624,436 buttons=0
+sleep 7
+pointer 611,430 buttons=0
+sleep 9
+pointer 593,423 buttons=0
+sleep 8
+pointer 578,416 buttons=0
+sleep 10
+pointer 558,406 buttons=0
+sleep 6
+pointer 546,400 buttons=0
+sleep 8
+pointer 529,392 buttons=0
+sleep 10
+pointer 509,382 buttons=0
+sleep 7
+pointer 495,373 buttons=0
+sleep 10
+pointer 474,363 buttons=0
+sleep 9
+pointer 456,353 buttons=0
+sleep 7
+pointer 441,344 buttons=0
+sleep 8
+pointer 426,334 buttons=0
+sleep 9
+pointer 408,324 buttons=0
+sleep 8
+pointer 391,313 buttons=0
+sleep 9
+pointer 373,301 buttons=0
+sleep 8
+pointer 356,291 buttons=0
+sleep 8
+pointer 342,280 buttons=0
+sleep 10
+pointer 323,267 buttons=0
+sleep 6
+pointer 310,258 buttons=0
+sleep 10
+pointer 293,245 buttons=0
+sleep 7
+pointer 280,236 buttons=0
+sleep 8
+pointer 264,224 buttons=0
+sleep 8
+pointer 251,213 buttons=0
+sleep 10
+pointer 233,200 buttons=0
+sleep 9
+pointer 219,189 buttons=0
+sleep 8
+pointer 206,178 buttons=0
+sleep 7
+pointer 195,169 buttons=0
+sleep 8
+pointer 182,159 buttons=0
+sleep 8
+pointer 170,149 buttons=0
+sleep 9
+pointer 157,137 buttons=0
+sleep 9
+pointer 144,127 buttons=0
+sleep 7
+pointer 135,119 buttons=0
+sleep 9
+pointer 124,110 buttons=0
+sleep 9
+pointer 113,100 buttons=0
+sleep 7
+pointer 104,93 buttons=0
+sleep 10
+pointer 93,83 buttons=0
+sleep 7
+pointer 85,76 buttons=0
+sleep 10
+pointer 76,68 buttons=0
+sleep 7
+pointer 68,62 buttons=0
+sleep 7
+pointer 62,57 buttons=0
+sleep 11
+pointer 54,49 buttons=0
+sleep 7
+pointer 48,44 buttons=0
+sleep 8
+pointer 43,39 buttons=0
+sleep 9
+pointer 37,35 buttons=0
+sleep 8
+pointer 33,31 buttons=0
+sleep 9
+pointer 28,27 buttons=0
+sleep 9
+pointer 25,24 buttons=0
+sleep 6
+pointer 22,21 buttons=0
+sleep 9
+pointer 19,19 buttons=0
+sleep 9
+pointer 17,17 buttons=0
+sleep 9
+pointer 15,15 buttons=0
+sleep 8
+pointer 13,14 buttons=0
+sleep 7
+pointer 12,13 buttons=0
+sleep 10
+pointer 11,12 buttons=0
+sleep 6
+pointer 11,12 buttons=0
+sleep 9
+pointer 10,11 buttons=0
+sleep 9
+pointer 10,11 buttons=0
+sleep 9
+pointer 10,11 buttons=0
+sleep 8
+pointer 10,11 buttons=0

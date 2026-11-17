@@ -17,7 +17,8 @@
 //!   speed up and slow down, with a pause between long runs.
 //!
 //! `type`, `key`, `wait`, `screenshot` and `cursor_position` are planned by [`crate::plan`]
-//! exactly as in direct mode.
+//! exactly as in direct mode. `type` and `key` have a humanized mode of their own,
+//! [`TypingMode`], in the `typing` submodule; [`plan_input`] picks by both modes.
 //!
 //! All randomness is one [`SeededRandom`] stream, so the same seed and the same acts from
 //! the same place give the same events. Within one plan the scalar draws (durations, bows,
@@ -37,6 +38,10 @@ use bolide_rfb::proto::{
 
 use crate::actions::{plan, ActionError, PlanContext, RfbOp};
 use crate::wire::{ComputerAction, ScrollDirection};
+
+mod typing;
+
+pub use typing::{plan_typing, TypingMode};
 
 /// How bolide moves the pointer: `--pointer direct|humanized`.
 ///
@@ -163,6 +168,33 @@ mod params {
 use params::*;
 
 // --- the plan ---------------------------------------------------------------------------
+
+/// Turn one action into the RFB operations that perform it, in the modes the session
+/// was started with: `type` and `key` by `typing`, the pointer acts by `pointer`, and
+/// `wait`, `screenshot` and `cursor_position` as [`crate::plan`] plans them.
+///
+/// Both humanized halves draw from the one `random` stream, act by act in the order the
+/// acts come, so a seed gives the same events for the same acts. Direct typing draws
+/// nothing, so with it a seed moves the pointer exactly as it did before typing could be
+/// humanized.
+pub fn plan_input(
+    action: &ComputerAction,
+    ctx: PlanContext,
+    pointer: PointerMode,
+    typing: TypingMode,
+    from: Option<(u16, u16)>,
+    random: &mut SeededRandom,
+) -> std::result::Result<Vec<RfbOp>, ActionError> {
+    if typing == TypingMode::Humanized {
+        if let Some(ops) = plan_typing(action, random)? {
+            return Ok(ops);
+        }
+    }
+    match pointer {
+        PointerMode::Direct => plan(action, ctx),
+        PointerMode::Humanized => plan_humanized(action, ctx, from, random),
+    }
+}
 
 /// Turn one action into the RFB operations that perform it, humanly.
 ///

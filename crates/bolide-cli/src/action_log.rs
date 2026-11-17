@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use bolide_server::{ActionLog, LoggedRequest, PointerMode};
+use bolide_server::{ActionLog, LoggedRequest, PointerMode, TypingMode};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
@@ -88,6 +88,8 @@ pub struct Header {
     pub height: u16,
     /// `--pointer`.
     pub pointer: PointerMode,
+    /// `--typing`.
+    pub typing: TypingMode,
     /// The recording, if `--record` is on.
     pub recording: Option<RecordingInfo>,
 }
@@ -99,6 +101,7 @@ struct HeaderLine<'a> {
     connected: String,
     record: Option<RecordLine>,
     pointer: &'a str,
+    typing: &'a str,
 }
 
 #[derive(Serialize)]
@@ -173,6 +176,7 @@ impl<W: Write + Send> ActionLogFile<W> {
                 start: anchor.wall_time(r.zero),
             }),
             pointer: header.pointer.as_str(),
+            typing: header.typing.as_str(),
         };
         write_line(&mut out, &line)?;
         Ok(ActionLogFile {

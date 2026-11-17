@@ -65,6 +65,8 @@ pub(crate) enum Command {
         /// baseline to be incremental against.
         incremental: bool,
     },
+    /// Flush the stream, then answer: everything queued before this has been written.
+    Flush(tokio::sync::oneshot::Sender<()>),
 }
 
 /// A cheap, cloneable handle to a live RFB session. See the module docs.
@@ -258,6 +260,15 @@ impl Session for SessionHandle {
     async fn key(&self, keysym: u32, down: bool) -> Result<()> {
         self.inner
             .send(Command::Write(proto::key_event(keysym, down)))
+    }
+
+    async fn flush(&self) -> Result<()> {
+        // Queued behind everything sent before it, so the writer reaches it only once
+        // those are written; it answers after flushing the stream. A writer that died
+        // first drops the sender, and the session is gone.
+        let (done, written) = tokio::sync::oneshot::channel();
+        self.inner.send(Command::Flush(done))?;
+        written.await.map_err(|_| Error::Closed)
     }
 
     async fn cut_text(&self, text: &str) -> Result<()> {

@@ -18,7 +18,9 @@ use bolide_server::wire::{
     ClipboardResponse, ComputerAction, ComputerResponse, ErrorCode, ErrorResponse, ScrollDirection,
     StatusResponse,
 };
-use bolide_server::{ActionLog, Clock, LoggedRequest, PointerMode, Running, ServerConfig};
+use bolide_server::{
+    ActionLog, Clock, LoggedRequest, PointerMode, Running, ServerConfig, TypingMode,
+};
 use tokio::sync::broadcast;
 
 // ---------------------------------------------------------------- the fake session
@@ -62,6 +64,11 @@ struct Fake {
     waits: Mutex<Vec<Duration>>,
     last_cut: Mutex<Option<String>>,
     events: broadcast::Sender<ServerEvent>,
+    /// Like a real session, an event is only queued when `pointer` or `key` returns; a
+    /// `flush` is when everything logged so far has gone out. Each flush, as how many
+    /// calls it covered and when, on `clock` if one was given.
+    flushes: Mutex<Vec<(usize, Option<std::time::Instant>)>>,
+    clock: Option<Arc<dyn Clock>>,
 }
 
 impl Fake {
@@ -86,7 +93,21 @@ impl Fake {
             waits: Mutex::new(Vec::new()),
             last_cut: Mutex::new(None),
             events: broadcast::channel(16).0,
+            flushes: Mutex::new(Vec::new()),
+            clock: None,
         })
+    }
+
+    /// A fake that stamps each flush with `clock`'s time: the server's, in a test of when
+    /// an answer comes.
+    fn on_clock(mut self: Arc<Fake>, clock: Arc<dyn Clock>) -> Arc<Fake> {
+        Arc::get_mut(&mut self).expect("sole owner").clock = Some(clock);
+        self
+    }
+
+    /// The last flush: how many calls had gone out by then, and when.
+    fn last_flush(&self) -> Option<(usize, Option<std::time::Instant>)> {
+        self.flushes.lock().unwrap().last().copied()
     }
 
     /// An unpainted fake: the framebuffer is allocated but the desktop has not drawn.
@@ -179,6 +200,14 @@ impl Session for Fake {
         // server ever stops holding the desktop for the length of an action.
         tokio::task::yield_now().await;
         self.alive()
+    }
+
+    async fn flush(&self) -> bolide_rfb::Result<()> {
+        self.alive()?;
+        let covered = self.log.lock().unwrap().len();
+        let at = self.clock.as_ref().map(|c| c.now());
+        self.flushes.lock().unwrap().push((covered, at));
+        Ok(())
     }
 
     async fn cut_text(&self, text: &str) -> bolide_rfb::Result<()> {
@@ -1426,6 +1455,219 @@ async fn a_line_spans_the_time_its_request_took_on_the_server_s_clock() {
         assert!(pair[0].end <= pair[1].start, "{pair:?}");
     }
     h.shutdown().await;
+}
+
+/// A server whose action log and fake session share one virtual clock, so a flush's time
+/// and a line's end can be compared.
+async fn timed(config: ServerConfig) -> (Harness, Arc<MemoryLog>) {
+    let clock = VirtualClock::new();
+    let log = Arc::new(MemoryLog::default());
+    let h = Harness::start(
+        Fake::new(640, 480).on_clock(clock.clone()),
+        ServerConfig {
+            frame_timeout: Duration::from_millis(50),
+            clock,
+            action_log: Some(log.clone()),
+            ..config
+        },
+    )
+    .await;
+    (h, log)
+}
+
+/// A line's end is true for input: by the time an act is answered, every event it sent
+/// has gone out (the session's `flush`), and that was no later than the line's end. A
+/// session queues an event when `key` returns; without the flush the answer, and the
+/// log, would come before the keys reached the desktop.
+async fn assert_answered_after_its_events_went_out(config: ServerConfig) {
+    let (h, log) = timed(config).await;
+    for act in [
+        ComputerAction::Type {
+            text: "Hi, Bob!\n".into(),
+        },
+        ComputerAction::Key {
+            text: "ctrl+shift+t".into(),
+        },
+        ComputerAction::LeftClick {
+            coordinate: [10, 20],
+        },
+    ] {
+        expect_ok(h.action(&act).await).await;
+        let sent = h.session.calls().len();
+        let line = log.lines().pop().expect("logged");
+        let (covered, at) = h
+            .session
+            .last_flush()
+            .unwrap_or_else(|| panic!("{act:?} answered without a flush"));
+        assert_eq!(
+            covered, sent,
+            "{act:?} answered before its last event went out"
+        );
+        let at = at.expect("stamped");
+        assert!(line.start <= at && at <= line.end, "{act:?}: {line:?}");
+    }
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_direct_act_is_answered_only_once_its_events_have_gone_out() {
+    assert_answered_after_its_events_went_out(ServerConfig::default()).await;
+}
+
+#[tokio::test]
+async fn a_humanized_type_or_key_is_answered_only_once_its_last_key_has_gone_out() {
+    assert_answered_after_its_events_went_out(ServerConfig {
+        typing: TypingMode::Humanized,
+        seed: 5,
+        ..Default::default()
+    })
+    .await;
+}
+
+/// A humanized `type` takes the time a person takes, on the server's clock, and its line
+/// spans it: from the first key to the last, every wait between them.
+#[tokio::test]
+async fn a_humanized_type_line_spans_the_time_its_keys_took() {
+    let (h, log) = timed(ServerConfig {
+        typing: TypingMode::Humanized,
+        seed: 5,
+        ..Default::default()
+    })
+    .await;
+    expect_ok(
+        h.action(&ComputerAction::Type {
+            text: "Hello there".into(),
+        })
+        .await,
+    )
+    .await;
+    let line = log.lines().pop().expect("logged");
+    let took = line.end - line.start;
+    assert!(
+        took >= Duration::from_millis(10 * 60),
+        "eleven keys in {took:?}"
+    );
+    h.shutdown().await;
+}
+
+#[test]
+fn the_typing_is_direct_unless_asked_otherwise() {
+    assert_eq!(ServerConfig::default().typing, TypingMode::Direct);
+}
+
+/// A harness that types like a person, and moves the pointer as `pointer` says.
+async fn typist(seed: u32, pointer: PointerMode, typing: TypingMode) -> Harness {
+    Harness::start(
+        Fake::new(1280, 800),
+        ServerConfig {
+            pointer,
+            typing,
+            seed,
+            frame_timeout: Duration::from_millis(50),
+            clock: VirtualClock::new(),
+            ..Default::default()
+        },
+    )
+    .await
+}
+
+/// Pointer acts with typing and keys between them.
+async fn a_few_mixed_acts(h: &Harness) -> Vec<Call> {
+    for act in [
+        ComputerAction::LeftClick {
+            coordinate: [900, 600],
+        },
+        ComputerAction::Type {
+            text: "Hi, Bob!".into(),
+        },
+        ComputerAction::Key {
+            text: "ctrl+a".into(),
+        },
+        ComputerAction::MouseMove {
+            coordinate: [100, 100],
+        },
+    ] {
+        expect_ok(h.action(&act).await).await;
+    }
+    h.session.calls()
+}
+
+fn key_calls(calls: &[Call]) -> Vec<(u32, bool)> {
+    calls
+        .iter()
+        .filter_map(|c| match *c {
+            Call::Key { keysym, down } => Some((keysym, down)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn the_same_seed_types_the_same_and_another_does_not() {
+    // The pointer is direct, so only typing draws: what differs by seed is the typing.
+    let session = |seed| async move {
+        let clock = VirtualClock::new();
+        let h = Harness::start(
+            Fake::new(1280, 800),
+            ServerConfig {
+                typing: TypingMode::Humanized,
+                seed,
+                clock: clock.clone(),
+                ..Default::default()
+            },
+        )
+        .await;
+        let calls = a_few_mixed_acts(&h).await;
+        h.shutdown().await;
+        (calls, clock.slept())
+    };
+    let (a, b, c) = (session(7).await, session(7).await, session(8).await);
+    assert!(!a.1.is_empty(), "typed with no waits");
+    assert_eq!(a, b);
+    assert_ne!(a.1, c.1);
+}
+
+/// Humanized typing sends the keys direct typing sends, `ctrl+a` included; only the
+/// order of some ups (rollover) and the waits between them differ.
+#[tokio::test]
+async fn humanized_typing_sends_the_keys_direct_typing_sends() {
+    let direct = typist(2, PointerMode::Direct, TypingMode::Direct).await;
+    let human = typist(2, PointerMode::Direct, TypingMode::Humanized).await;
+    let (mut d, mut h) = (
+        key_calls(&a_few_mixed_acts(&direct).await),
+        key_calls(&a_few_mixed_acts(&human).await),
+    );
+    let downs = |keys: &[(u32, bool)]| keys.iter().filter(|k| k.1).map(|k| k.0).collect::<Vec<_>>();
+    assert_eq!(downs(&h), downs(&d));
+    d.sort_unstable();
+    h.sort_unstable();
+    assert_eq!(h, d);
+    for s in [direct, human] {
+        s.shutdown().await;
+    }
+}
+
+/// With typing direct, a seed moves the pointer as it did before typing could draw from
+/// the stream: the type and key between the pointer acts change nothing.
+#[tokio::test]
+async fn with_typing_direct_a_seed_moves_the_pointer_as_it_always_has() {
+    let mixed = typist(7, PointerMode::Humanized, TypingMode::Direct).await;
+    let pointer_only = typist(7, PointerMode::Humanized, TypingMode::Direct).await;
+    let with_typing = pointer_calls(&a_few_mixed_acts(&mixed).await);
+    for act in [
+        ComputerAction::LeftClick {
+            coordinate: [900, 600],
+        },
+        ComputerAction::MouseMove {
+            coordinate: [100, 100],
+        },
+    ] {
+        expect_ok(pointer_only.action(&act).await).await;
+    }
+    assert_eq!(with_typing, pointer_calls(&pointer_only.session.calls()));
+    for h in [mixed, pointer_only] {
+        h.shutdown().await;
+    }
 }
 
 /// Typing is not humanized: one down and one up per character, as in direct mode.

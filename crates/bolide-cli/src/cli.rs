@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use bolide_server::wire::{ComputerAction, ScrollDirection};
-use bolide_server::{DragPacing, PointerMode};
+use bolide_server::{DragPacing, PointerMode, TypingMode};
 use clap::builder::TypedValueParser as _;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
@@ -30,6 +30,10 @@ use crate::error::CliError;
 /// its name is written. clap, the daemon's re-exec and the tests all read it from here.
 /// Its values are [`PointerMode::NAMES`].
 pub const POINTER_FLAG: &str = "pointer";
+
+/// The `connect` flag that picks how `type` and `key` are typed, without its `--`: the
+/// one place its name is written. Its values are [`TypingMode::NAMES`].
+pub const TYPING_FLAG: &str = "typing";
 
 /// The whole command line.
 #[derive(Debug, Parser)]
@@ -176,7 +180,7 @@ pub struct ConnectArgs {
     /// like a hand: a curved path timed by the distance, with a little tremor and an
     /// overshoot on long moves, a pause before each press and a held press, and scroll
     /// notches in runs. Each act then takes longer — about half a second to a second a
-    /// click. Typing and keys are the same in both.
+    /// click. Typing and keys follow --typing.
     #[arg(
         long = POINTER_FLAG,
         value_name = "MODE",
@@ -187,8 +191,26 @@ pub struct ConnectArgs {
                 .expect("a possible value is a pointer mode")),
     )]
     pub pointer: PointerMode,
-    /// The seed of a humanized pointer's randomness: the same seed and the same acts move
-    /// the same way. Without it, each session picks its own.
+    /// How `type` and `key` are typed.
+    ///
+    /// `direct` (the default) sends every key at once. `humanized` types like a person:
+    /// varied intervals around 150 ms, a pace that wanders per word, the odd longer
+    /// pause, and keys held a human while; a chord presses its modifiers a little apart.
+    /// The keys and the text are the same; it takes about a second for 5 characters, so
+    /// a 100-character line takes about 19.5 s. Pointer acts follow --pointer.
+    #[arg(
+        long = TYPING_FLAG,
+        value_name = "MODE",
+        default_value = TypingMode::Direct.as_str(),
+        value_parser = clap::builder::PossibleValuesParser::new(TypingMode::NAMES)
+            .map(|name| TypingMode::from_name(&name)
+                // Cannot fail: the possible values are exactly the names it knows.
+                .expect("a possible value is a typing mode")),
+    )]
+    pub typing: TypingMode,
+    /// The seed of a humanized pointer's and humanized typing's randomness, one stream
+    /// drawn act by act: the same seed and the same acts move and type the same way.
+    /// Without it, each session picks its own.
     #[arg(long, value_name = "N")]
     pub seed: Option<u32>,
     /// Held pointer moves a drag takes from its start to its end [default: 20].
@@ -244,6 +266,12 @@ impl ConnectArgs {
     /// given.
     pub fn pointer_seed(&self, fresh: impl FnOnce() -> u32) -> u32 {
         self.seed.unwrap_or_else(fresh)
+    }
+
+    /// Whether the session draws from a seed: when the pointer or the typing is
+    /// humanized.
+    pub fn seeded(&self) -> bool {
+        self.pointer == PointerMode::Humanized || self.typing == TypingMode::Humanized
     }
 
     /// The drag pacing these flags ask for: the server's default, with each flag

@@ -9,6 +9,7 @@ use std::cell::Cell;
 
 use bolide_cli::cli::{
     command_line_credentials, parse_args, parse_target, Command, Password, POINTER_FLAG,
+    TYPING_FLAG,
 };
 use bolide_cli::daemon::{self, ChildStatus};
 use bolide_cli::error::EXIT_FAILURE;
@@ -281,6 +282,23 @@ fn the_pointer_mode_and_seed_reach_the_child() {
     let child = child_of(&["connect", "vnc://h", &flag, "direct"]);
     assert!(!child.contains(&flag), "{child:?}");
     assert!(!child.iter().any(|a| a == "--seed"), "{child:?}");
+}
+
+/// The daemon types the way `connect` was asked to, from the same seed. Direct typing,
+/// the default, adds nothing to the child's argv.
+#[test]
+fn the_typing_mode_and_seed_reach_the_child() {
+    let flag = format!("--{TYPING_FLAG}");
+    let child = child_of(&["connect", "vnc://h", &flag, "humanized", "--seed", "9"]);
+    assert!(
+        child.windows(2).any(|w| w == [flag.as_str(), "humanized"]),
+        "{child:?}"
+    );
+    assert!(child.windows(2).any(|w| w == ["--seed", "9"]), "{child:?}");
+    assert_eq!(child.last().map(String::as_str), Some("--foreground"));
+
+    let child = child_of(&["connect", "vnc://h", &flag, "direct"]);
+    assert!(!child.contains(&flag), "{child:?}");
 }
 
 /// The daemon writes the action log where the user's shell meant: an absolute path.

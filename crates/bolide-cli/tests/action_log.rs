@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use bolide_cli::action_log::{ActionLogFile, Anchor, Header, RecordingInfo};
-use bolide_server::{ActionLog, LoggedRequest, PointerMode};
+use bolide_server::{ActionLog, LoggedRequest, PointerMode, TypingMode};
 use serde_json::{json, Map, Value};
 
 use common::TempDir;
@@ -27,6 +27,7 @@ fn header(recording: Option<RecordingInfo>) -> Header {
         width: 1280,
         height: 800,
         pointer: PointerMode::Humanized,
+        typing: TypingMode::Direct,
         recording,
     }
 }
@@ -78,6 +79,7 @@ fn the_header_says_what_was_connected_and_how() {
             "connected": "2025-11-13T02:13:20.123Z",
             "record": null,
             "pointer": "humanized",
+            "typing": "direct",
         })]
     );
 

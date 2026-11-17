@@ -56,6 +56,10 @@ keyboard: without this a `type` racing a `click` reaches it braided, which is te
 clicks nobody asked for. Requests are not rejected, only serialized — but a caller that
 fires several actions at once cannot predict their order, and should await each one.
 
+**An action is answered once its last event has gone out**: every pointer and key event
+it sends has been written to the desktop's connection before the response is sent, and
+before its action-log line ends.
+
 `coordinate` is `[x, y]` in framebuffer pixels. A coordinate outside the screen is a
 `400` with `"error": "out_of_bounds"` — bolide does not clamp, because a caller that
 thinks the screen is bigger than it is needs to be told rather than quietly redirected
@@ -81,6 +85,17 @@ pauses between them, then the presses. A click lands within a pixel of `coordina
 (still on the screen), and the drag flags do not apply; see the README. The response is
 the same, and comes when the last event has gone out, so an action takes as long as a
 person would. `type`, `key` and the rest are unchanged.
+
+### `--typing humanized`
+
+`type` and `key` follow `bolide connect --typing direct|humanized` (default `direct`), and
+nothing else does. Under `humanized` a `type` sends the same KeyEvents as `direct`, one
+down and one up per character, but with a person's waits between them: varied intervals
+around 150 ms, a held key's up sometimes after the next key's down where no Shift is
+involved, now and then a longer pause. A `key` chord presses its modifiers a little
+apart, holds the key, and lets the modifiers go in reverse. The text that arrives is
+exactly the text asked for. The response is the same, and comes when the last key has
+gone out: about 5 characters a second.
 
 `scroll_amount` and `duration` are honoured in full — there is no cap on how far a caller
 scrolls or how long it waits; a negative or NaN `duration` is zero. Request bodies have no

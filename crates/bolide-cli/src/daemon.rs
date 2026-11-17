@@ -22,9 +22,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
-use bolide_server::PointerMode;
+use bolide_server::{PointerMode, TypingMode};
 
-use crate::cli::{ConnectArgs, Credentials, Password, Target, POINTER_FLAG};
+use crate::cli::{ConnectArgs, Credentials, Password, Target, POINTER_FLAG, TYPING_FLAG};
 use crate::error::CliError;
 use crate::run::PASSWORD_ENV;
 use crate::state::{self, SessionState};
@@ -74,6 +74,10 @@ pub fn child_args(args: &ConnectArgs, target: &Target, creds: &Credentials) -> V
     if args.pointer != PointerMode::default() {
         out.push(format!("--{POINTER_FLAG}"));
         out.push(args.pointer.as_str().to_string());
+    }
+    if args.typing != TypingMode::default() {
+        out.push(format!("--{TYPING_FLAG}"));
+        out.push(args.typing.as_str().to_string());
     }
     for (flag, value) in [
         ("--seed", args.seed.map(u64::from)),

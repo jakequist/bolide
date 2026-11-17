@@ -651,6 +651,45 @@ async fn commands_reach_the_wire_in_the_order_they_were_issued() {
     assert_eq!(expect(&mut server, want.len()).await, want);
 }
 
+/// A waker that does nothing, for polling a read exactly once.
+struct NoWake;
+
+impl std::task::Wake for NoWake {
+    fn wake(self: std::sync::Arc<Self>) {}
+}
+
+/// `key()` only queues an event; `flush()` is how a caller learns it has gone out. Once
+/// it returns, every event queued before it is already on the stream: read with one
+/// poll and no await between, so the writer task has no turn to catch up in.
+#[tokio::test]
+async fn flush_returns_once_every_earlier_event_is_written() {
+    let config = Config {
+        continuous: false,
+        ..Config::default()
+    };
+    let (session, mut server) = connected(config).await;
+    skip_setup(&mut server).await;
+
+    session.key(0x61, true).await.unwrap();
+    session.pointer(3, 4, 0).await.unwrap();
+    session.key(0x61, false).await.unwrap();
+    session.flush().await.unwrap();
+
+    let mut want = proto::key_event(0x61, true);
+    want.extend_from_slice(&proto::pointer_event(3, 4, 0));
+    want.extend_from_slice(&proto::key_event(0x61, false));
+    let mut got = vec![0u8; want.len()];
+    let waker = std::task::Waker::from(std::sync::Arc::new(NoWake));
+    let mut read = std::pin::pin!(server.read_exact(&mut got));
+    let polled =
+        std::future::Future::poll(read.as_mut(), &mut std::task::Context::from_waker(&waker));
+    assert!(
+        matches!(polled, std::task::Poll::Ready(Ok(n)) if n == want.len()),
+        "flush returned before its events were written: {polled:?}"
+    );
+    assert_eq!(got, want);
+}
+
 /// A `type` is a burst: forty KeyEvents that must arrive with nothing between them. The
 /// trait's `key()` cannot say that — two tasks calling it legitimately interleave — so
 /// a burst is one command, and this is the test that says the queue keeps it whole
@@ -872,6 +911,7 @@ async fn the_socket_dying_is_an_event_and_every_later_command_is_closed() {
         session.key(0x61, true).await,
         session.pointer(0, 0, 0).await,
         session.cut_text("x").await,
+        session.flush().await,
     ] {
         assert!(matches!(result, Err(Error::Closed)), "{result:?}");
     }
