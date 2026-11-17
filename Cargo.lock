@@ -184,7 +184,7 @@ dependencies = [
 
 [[package]]
 name = "bolide-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "bolide-rfb",
@@ -203,7 +203,7 @@ dependencies = [
 
 [[package]]
 name = "bolide-rfb"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aes",
  "async-trait",
@@ -220,7 +220,7 @@ dependencies = [
 
 [[package]]
 name = "bolide-server"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -238,7 +238,7 @@ dependencies = [
 
 [[package]]
 name = "bolide-testkit"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bolide-rfb",
  "flate2",
